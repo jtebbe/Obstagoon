@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}{{ ability.name }} - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>{{ ability.name }}</h1>
+<p class="muted">{{ ability.ability_id }}</p>
+<div class="card">
+  <p>{{ ability.description or 'No description parsed.' }}</p>
+</div>
+{% endblock %}

@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}{{ species.name }} - {{ site_title }}
+{% if encounter_locations %}
+<section class="card species-section">
+  <h2>Encounter Locations</h2>
+  {% for area in encounter_locations %}
+    <div class="encounter-block">
+      <h3>{{ area.display_name }}</h3>
+      {% for method in area.methods %}
+        <h4>{{ method.method }}</h4>
+        <ul>
+          {% for slot in method.slots %}
+            <li>{% if slot.min_level %}Lv. {{ slot.min_level }}{% if slot.max_level and slot.max_level != slot.min_level %}-{{ slot.max_level }}{% endif %}{% endif %}{% if slot.rate %}{% if slot.min_level %} · {% endif %}Rate {{ slot.rate }}{% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% endfor %}
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}
+{% block content %}
+<h1>{{ species.name }}</h1>
+{% if display_graphics.frontPic and (display_graphics.frontPic.endswith('.png') or display_graphics.frontPic.endswith('.webp') or display_graphics.frontPic.endswith('.jpg') or display_graphics.frontPic.endswith('.jpeg') or display_graphics.frontPic.endswith('.gif')) %}
+<section class="card pokemon-hero-card">
+  <div class="pokemon-hero">
+    <img src="{{ display_graphics.frontPic }}" alt="{{ species.name }} front sprite" class="pokemon-hero-sprite">
+    <div>
+      <p class="muted">{{ humanize_symbol(species.species_id) or species.species_id }}</p>
+      <p><strong>National Dex #:</strong> {{ species.national_dex if species.national_dex is not none else '—' }}</p>
+    </div>
+  </div>
+</section>
+{% else %}
+<p class="muted">{{ humanize_symbol(species.species_id) or species.species_id }}</p>
+{% endif %}
+<div class="grid two">
+  <section class="card">
+    <h2>Profile</h2>
+    <p><strong>Category:</strong> {{ species.category or '—' }}</p>
+    <p><strong>Types:</strong> {% if species.types %}{% for type in species.types %}<span class="{{ type_badge_class(type) }}">{{ type }}</span>{% if not loop.last %} {% endif %}{% endfor %}{% else %}—{% endif %}</p>
+    <p><strong>Abilities:</strong> {{ species.abilities|join(', ') or '—' }}</p>
+    <p><strong>Growth Rate:</strong> {{ species.growth_rate or '—' }}</p>
+    <p><strong>Egg Groups:</strong> {{ species.egg_groups|join(', ') or '—' }}</p>
+    {% if species.base_species %}<p><strong>Base Species:</strong> <a href="{{ slug_from_symbol(species.base_species) }}.html">{{ humanize_symbol(species.base_species) }}</a></p>{% endif %}
+    {% if species.form_name %}<p><strong>Form:</strong> {{ species.form_name }}</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Base Stats</h2>
+    <ul>
+      {% for stat, value in species.stats.items() %}
+        <li>{{ stat }}: {{ value }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+<section class="card species-section">
+  <h2>Description</h2>
+  <p>{{ species.description or 'No description parsed.' }}</p>
+</section>
+<section class="grid two species-section">
+  <div class="card">
+    <h2>Evolutions</h2>
+    <ul>
+      {% for evo in species.evolutions %}
+        <li>{{ evo.method_label }} → {{ evo.target_species }}</li>
+      {% else %}
+        <li>No evolutions parsed.</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <h2>Forms</h2>
+    <ul>
+      {% for form_id in species.forms %}
+        <li><a href="{{ slug_from_symbol(form_id) }}.html">{{ humanize_symbol(form_id) or form_id }}</a></li>
+      {% else %}
+        <li>No alternate forms.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+<section class="grid two species-section">
+  <div class="card">
+    <h2>Level-Up Learnset</h2>
+    <ul>
+      {% for entry in species.learnsets.level_up %}
+        <li>Lv. {{ entry.level }} — {{ entry.move }}</li>
+      {% else %}
+        <li>No level-up moves parsed.</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <h2>Teachable Moves</h2>
+    <ul>
+      {% for entry in species.learnsets.teachable %}
+        <li>{% if entry.source and entry.source not in ['Teachable', 'Universal'] %}{{ entry.source }} — {% elif entry.source == 'Universal' %}Universal — {% endif %}{{ entry.value }}{% if entry.extra %} ({{ entry.extra }}){% endif %}</li>
+      {% else %}
+        <li>No teachable moves parsed.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% if species.learnsets.egg %}
+<section class="card species-section">
+  <h2>Egg Moves</h2>
+  <p>{{ species.learnsets.egg|join(', ') }}</p>
+</section>
+{% endif %}
+
+{% if encounter_locations %}
+<section class="card species-section">
+  <h2>Encounter Locations</h2>
+  {% for area in encounter_locations %}
+    <div class="encounter-block">
+      <h3>{{ area.display_name }}</h3>
+      {% for method in area.methods %}
+        <h4>{{ method.method }}</h4>
+        <ul>
+          {% for slot in method.slots %}
+            <li>{% if slot.min_level %}Lv. {{ slot.min_level }}{% if slot.max_level and slot.max_level != slot.min_level %}-{{ slot.max_level }}{% endif %}{% endif %}{% if slot.rate %}{% if slot.min_level %} · {% endif %}Rate {{ slot.rate }}{% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% endfor %}
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

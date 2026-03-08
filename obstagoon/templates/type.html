@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}{{ label }} - {{ site_title }}{% endblock %}
+{% block content %}
+<h1><span class="{{ type_badge_class(label) }}">{{ label }}</span></h1>
+<div class="grid two">
+  <section class="card">
+    <h2>Species</h2>
+    <ul>
+      {% for mon in species %}
+        <li>{{ mon.name }}</li>
+      {% else %}
+        <li>No species parsed.</li>
+      {% endfor %}
+    </ul>
+  </section>
+  <section class="card">
+    <h2>Moves</h2>
+    <ul>
+      {% for move in moves %}
+        <li>{{ move.name }}</li>
+      {% else %}
+        <li>No moves parsed.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

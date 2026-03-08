@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}{{ move.name }} - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>{{ move.name }}</h1>
+<p class="muted">{{ move.move_id }}</p>
+<div class="card">
+  <p><strong>Type:</strong> {% if move.type %}<span class="{{ type_badge_class(move.type) }}">{{ move.type }}</span>{% else %}—{% endif %}</p>
+  <p><strong>Power:</strong> {{ move.power or '—' }}</p>
+  <p><strong>Accuracy:</strong> {{ move.accuracy or '—' }}</p>
+  <p><strong>PP:</strong> {{ move.pp or '—' }}</p>
+  <p><strong>Category:</strong> {{ move.category or '—' }}</p>
+  <p><strong>Description:</strong> {{ move.description or '—' }}</p>
+</div>
+{% endblock %}

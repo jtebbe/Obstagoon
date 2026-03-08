@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Abilities - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Abilities</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="abilities-search">Search Abilities</label>
+  <input id="abilities-search" class="filter-input" type="search" placeholder="Filter by ability name or description" data-filter-input data-filter-target="#abilities-list > li" data-filter-empty="#abilities-empty">
+</div>
+<ul id="abilities-list" class="card-list">
+  {% for ability in abilities %}
+    <li class="card" data-search-text="{{ ability.name }} {{ ability.description or '' }}"><a href="{{ slug_from_symbol(ability.ability_id) }}.html">{{ ability.name }}</a><p>{{ ability.description or '—' }}</p></li>
+  {% endfor %}
+</ul>
+<p id="abilities-empty" class="filter-empty" style="display:none;">No abilities match that search.</p>
+{% endblock %}

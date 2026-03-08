@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Encounters - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Encounters</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="encounters-search">Search Encounters</label>
+  <input id="encounters-search" class="filter-input" type="search" placeholder="Filter by area, encounter method, or species" data-filter-input data-filter-target="#encounter-list > section" data-filter-empty="#encounters-empty">
+</div>
+<div id="encounter-list">
+{% for area in encounters %}
+  <section class="card" data-search-text="{{ area.display_name }} {% for method, slots in area.encounters.items() %}{{ method }} {% for slot in slots %}{{ slot.species }} {% endfor %}{% endfor %}">
+    <h2>{{ area.display_name }}</h2>
+    {% for method, slots in area.encounters.items() %}
+      <h3>{{ method }}</h3>
+      <ul>
+        {% for slot in slots %}
+          <li>{{ slot.species }}{% if slot.min_level %} Lv. {{ slot.min_level }}-{{ slot.max_level }}{% endif %}{% if slot.rate %} Rate {{ slot.rate }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    {% endfor %}
+  </section>
+{% else %}
+  <p>No encounters parsed.</p>
+{% endfor %}
+</div>
+<p id="encounters-empty" class="filter-empty" style="display:none;">No encounter areas match that search.</p>
+{% endblock %}

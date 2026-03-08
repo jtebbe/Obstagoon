@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ site_title }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ '../' if request_depth|default(0) else '' }}assets/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="{{ '../' * (request_depth|default(0)) }}index.html">{{ site_title }}</a>
+      <nav>
+        <a href="{{ '../' * (request_depth|default(0)) }}pokedex/index.html">Pokédex</a>
+        <a href="{{ '../' * (request_depth|default(0)) }}moves/index.html">Moves</a>
+        <a href="{{ '../' * (request_depth|default(0)) }}abilities/index.html">Abilities</a>
+        <a href="{{ '../' * (request_depth|default(0)) }}forms/index.html">Forms</a>
+        <a href="{{ '../' * (request_depth|default(0)) }}encounters/index.html">Encounters</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    function obstagoonBindFilters() {
+      const inputs = document.querySelectorAll('[data-filter-input]');
+      inputs.forEach((input) => {
+        const selector = input.getAttribute('data-filter-target');
+        const emptyTextSelector = input.getAttribute('data-filter-empty');
+        const items = Array.from(document.querySelectorAll(selector || ''));
+        const emptyNode = emptyTextSelector ? document.querySelector(emptyTextSelector) : null;
+        const apply = () => {
+          const query = (input.value || '').trim().toLowerCase();
+          let visible = 0;
+          items.forEach((item) => {
+            const haystack = (item.getAttribute('data-search-text') || item.textContent || '').toLowerCase();
+            const match = !query || haystack.includes(query);
+            item.style.display = match ? '' : 'none';
+            if (match) visible += 1;
+          });
+          if (emptyNode) {
+            emptyNode.style.display = visible === 0 ? '' : 'none';
+          }
+        };
+        input.addEventListener('input', apply);
+        apply();
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', obstagoonBindFilters);
+    } else {
+      obstagoonBindFilters();
+    }
+  </script>
+</body>
+</body>
+</html>

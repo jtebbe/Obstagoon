@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obstagoon"
+version = "0.1.0"
+description = "Static documentation generator for pokeemerald-expansion"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Jinja2>=3.1,<4",
+]
+
+[project.scripts]
+obstagoon = "obstagoon.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["obstagoon*"]

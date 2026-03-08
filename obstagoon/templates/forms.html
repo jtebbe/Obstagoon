@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Forms - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Forms</h1>
+{% for base, children in form_groups %}
+  <section class="card">
+    <h2><a href="../pokedex/{{ slug_from_symbol(base.species_id) }}.html">{{ base.name }}</a></h2>
+    <ul>
+      {% for form in children %}
+        <li><a href="../pokedex/{{ slug_from_symbol(form.species_id) }}.html">{{ form.name }}</a> ({{ form.species_id }})</li>
+      {% endfor %}
+    </ul>
+  </section>
+{% else %}
+  <p>No forms parsed.</p>
+{% endfor %}
+{% endblock %}

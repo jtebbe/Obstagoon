@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Moves - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Moves</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="moves-search">Search Moves</label>
+  <input id="moves-search" class="filter-input" type="search" placeholder="Filter by move name, type, category, power, accuracy, or description" data-filter-input data-filter-target="#moves-table tbody tr" data-filter-empty="#moves-empty">
+</div>
+<table id="moves-table">
+  <thead><tr><th>Name</th><th>Type</th><th>Category</th><th>Power</th><th>Accuracy</th><th>PP</th></tr></thead>
+  <tbody>
+  {% for move in moves %}
+    <tr data-search-text="{{ move.name }} {{ move.type or '' }} {{ move.category or '' }} {{ move.power or '' }} {{ move.accuracy or '' }} {{ move.pp or '' }} {{ move.description or '' }}">
+      <td><a href="{{ slug_from_symbol(move.move_id) }}.html">{{ move.name }}</a></td>
+      <td>{% if move.type %}<span class="{{ type_badge_class(move.type) }}">{{ move.type }}</span>{% else %}—{% endif %}</td>
+      <td>{{ move.category or '—' }}</td>
+      <td>{{ move.power or '—' }}</td>
+      <td>{{ move.accuracy or '—' }}</td>
+      <td>{{ move.pp or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p id="moves-empty" class="filter-empty" style="display:none;">No moves match that search.</p>
+{% endblock %}

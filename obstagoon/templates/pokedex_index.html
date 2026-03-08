@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Pokédex - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Pokédex</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="pokedex-search">Search Pokémon</label>
+  <input id="pokedex-search" class="filter-input" type="search" placeholder="Filter by name, type, ability, or dex number" data-filter-input data-filter-target="#pokedex-table tbody tr" data-filter-empty="#pokedex-empty">
+</div>
+<table id="pokedex-table">
+  <thead><tr><th>National Dex #</th><th>Sprite</th><th>Name</th><th>Types</th><th>Abilities</th></tr></thead>
+  <tbody>
+  {% for number, species in dex_entries %}
+    <tr data-search-text="{{ number }} {{ species.name }} {{ species.types|join(' ') }} {{ species.abilities|join(' ') }}">
+      <td>{{ number }}</td>
+      <td>{% set gfx = display_graphics(species) %}{% if gfx.frontPic and (gfx.frontPic.endswith('.png') or gfx.frontPic.endswith('.webp') or gfx.frontPic.endswith('.jpg') or gfx.frontPic.endswith('.jpeg') or gfx.frontPic.endswith('.gif')) %}<img src="{{ gfx.frontPic }}" alt="{{ species.name }} front sprite" style="image-rendering:pixelated;max-width:64px;height:auto;">{% else %}—{% endif %}</td>
+      <td><a href="{{ number }}.html">{{ species.name }}</a></td>
+      <td>{% if species.types %}{% for type in species.types %}<span class="{{ type_badge_class(type) }}">{{ type }}</span>{% if not loop.last %} {% endif %}{% endfor %}{% else %}—{% endif %}</td>
+      <td>{{ species.abilities|join(', ') }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p id="pokedex-empty" class="filter-empty" style="display:none;">No Pokémon match that search.</p>
+{% endblock %}
