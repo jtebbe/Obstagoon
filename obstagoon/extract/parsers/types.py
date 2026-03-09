@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from ..c_utils import find_first_existing, flatten_local_includes, parse_numeric_constants, parse_named_initializers, read_text, strip_comments, find_matching
+from .species import _expand_species_function_macros
 
 
 def parse_types(project_dir: Path) -> dict[str, str]:
@@ -39,7 +40,7 @@ def parse_species_to_national(project_dir: Path) -> dict[str, int | None]:
     if not species_info.exists():
         return {}
     roots = [project_dir / 'src/data/pokemon', project_dir / 'src/data', project_dir / 'include', project_dir]
-    text = strip_comments(flatten_local_includes(species_info, roots=roots))
+    text = _expand_species_function_macros(strip_comments(flatten_local_includes(species_info, roots=roots)))
     result: dict[str, int | None] = {}
     dex_const_path = project_dir / 'include/constants/pokedex.h'
     dex_map: dict[str, int] = {}

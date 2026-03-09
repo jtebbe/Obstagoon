@@ -47,6 +47,18 @@ def _segment_tokens(path: str) -> list[set[str]]:
     return [_tokenize_pathish(part) for part in parts]
 
 
+
+
+def _graphics_species_dir_bonus(rel: str, species_id: str) -> int:
+    species_tokens = _species_specific_tokens(species_id)
+    parts = [part for part in rel.replace('\\', '/').lower().split('/') if part]
+    if len(parts) >= 3 and parts[0] == 'graphics' and parts[1] == 'pokemon':
+        seg_tokens = _tokenize_pathish(parts[2])
+        if seg_tokens == species_tokens:
+            return 24
+        if species_tokens and species_tokens.issubset(seg_tokens):
+            return 10
+    return 0
 def _exact_species_segment_bonus(rel: str, species_id: str) -> int:
     species_tokens = _species_specific_tokens(species_id)
     if not species_tokens:
@@ -74,16 +86,18 @@ def _path_kind_bonus(path: Path, kind: str) -> int:
         if '/icon' in rel or 'icon' in stem:
             score -= 24
         if '/world/' in rel:
-            score -= 36
+            score -= 60
+        if 'tera' in rel or 'teal' in rel:
+            score -= 18
         if 'anim_front' in stem:
-            score += 26
+            score += 34
         if stem == 'front':
-            score += 10
+            score += 18
         if 'pal' in stem or '/palette' in rel:
             score -= 32
     elif kind.startswith('back'):
         if '/back/' in rel or 'back' in stem:
-            score += 20
+            score += 24
         if '/front/' in rel or 'front' in stem:
             score -= 30
         if '/icon' in rel or 'icon' in stem:
@@ -129,6 +143,7 @@ class SpriteIndex:
     name_lookup: dict[str, list[Path]]
     norm_lookup: dict[str, list[Path]]
     token_lookup: dict[str, list[Path]]
+    dir_lookup: dict[str, list[Path]]
 
 
 def _normalize_token(value: str) -> str:
@@ -143,13 +158,158 @@ def _normalize_token(value: str) -> str:
 
 
 def _tokenize_pathish(value: str) -> set[str]:
-    lowered = value.replace('\\', '/').lower()
+    value = value.replace('\\', '/')
+    value = re.sub(r'([a-z])([A-Z])', r'\1_\2', value)
+    value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', value)
+    value = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', value)
+    value = re.sub(r'(\d)([a-zA-Z])', r'\1_\2', value)
+    lowered = value.lower()
     parts = re.split(r'[^a-z0-9]+', lowered)
-    return {p for p in parts if p}
+    tokens = {p for p in parts if p}
+    # normalize common shorthand
+    if 'percent' in tokens:
+        if '10' in tokens:
+            tokens.add('10percent')
+        if '50' in tokens:
+            tokens.add('50percent')
+    if 'male' in tokens:
+        tokens.add('m')
+    if 'female' in tokens:
+        tokens.add('f')
+    return tokens
 
 
 def _species_slug(species_id: str) -> str:
     return species_id.replace('SPECIES_', '').lower()
+
+
+def _split_slug_tokens(value: str) -> list[str]:
+    value = value.replace('\\', '/')
+    value = re.sub(r'([a-z])([A-Z])', r'\1_\2', value)
+    value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', value)
+    value = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', value)
+    value = re.sub(r'(\d)([a-zA-Z])', r'\1_\2', value)
+    return [bit for bit in re.split(r'[^a-z0-9]+', value.lower()) if bit]
+
+
+def _strip_form_suffix_tokens(tokens: list[str]) -> list[str]:
+    trimmed = list(tokens)
+    while trimmed and trimmed[-1] in {'pattern', 'form', 'mode'}:
+        trimmed.pop()
+    return trimmed
+
+
+def _form_slug_aliases(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+    candidates: list[str] = []
+
+    def add(parts: list[str]) -> None:
+        slug = '_'.join(parts)
+        if slug and slug not in candidates:
+            candidates.append(slug)
+
+    add(tokens)
+    if len(tokens) == 1:
+        only = tokens[0]
+        if only in {'10', '50'}:
+            add([only, 'percent'])
+        if only == '10percent':
+            add(['10', 'percent'])
+        if only == '50percent':
+            add(['50', 'percent'])
+    if len(tokens) == 2 and tokens[1] == 'percent' and tokens[0] in {'10', '50'}:
+        add([f"{tokens[0]}percent"])
+
+    # Upstream form layouts sometimes keep additional qualifiers on the species symbol
+    # but store the actual art under a shared percent-form directory.
+    # Example: SPECIES_ZYGARDE_10_POWER_CONSTRUCT -> graphics/pokemon/zygarde/10_percent/anim_front.png
+    if tokens[0] in {'10', '50', '10percent', '50percent'}:
+        percent_slug = '10_percent' if tokens[0] in {'10', '10percent'} else '50_percent'
+        if percent_slug not in candidates:
+            candidates.append(percent_slug)
+        compact_percent_slug = percent_slug.replace('_', '')
+        if compact_percent_slug not in candidates:
+            candidates.append(compact_percent_slug)
+    return candidates
+
+
+def _longest_existing_species_prefix(index: SpriteIndex, slug: str) -> tuple[str | None, list[str]]:
+    tokens = _split_slug_tokens(slug)
+    if not tokens:
+        return None, []
+    best_prefix: str | None = None
+    best_remainder: list[str] = []
+    for i in range(len(tokens), 0, -1):
+        prefix = '_'.join(tokens[:i])
+        rel = f'graphics/pokemon/{prefix}'
+        if rel in index.dir_lookup:
+            best_prefix = prefix
+            best_remainder = tokens[i:]
+            break
+    return best_prefix, best_remainder
+
+
+def _raw_token_slug_variants(token: str) -> list[str]:
+    variants: list[str] = []
+    for cand in _candidate_tokens(token):
+        toks = _split_slug_tokens(cand.replace('/', '_'))
+        if toks:
+            variants.append('_'.join(toks))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if variant not in seen:
+            seen.add(variant)
+            deduped.append(variant)
+    return deduped
+
+
+def _exact_dir_candidates(index: SpriteIndex, species_id: str, token: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(rel_dir: str | None) -> None:
+        if rel_dir and rel_dir in index.dir_lookup and rel_dir not in candidates:
+            candidates.append(rel_dir)
+
+    slug = _species_slug(species_id)
+    add(f'graphics/pokemon/{slug}')
+
+    prefix, remainder = _longest_existing_species_prefix(index, slug)
+    if prefix:
+        remainder = _strip_form_suffix_tokens(remainder)
+        if remainder:
+            for form_slug in _form_slug_aliases(remainder):
+                add(f'graphics/pokemon/{prefix}/{form_slug}')
+                add(f'graphics/pokemon/{prefix}_{form_slug}')
+                add(f'graphics/pokemon/{prefix}-{form_slug}')
+        add(f'graphics/pokemon/{prefix}')
+
+    for raw_slug in _raw_token_slug_variants(token):
+        add(f'graphics/pokemon/{raw_slug}')
+        raw_prefix, raw_remainder = _longest_existing_species_prefix(index, raw_slug)
+        if raw_prefix:
+            raw_remainder = _strip_form_suffix_tokens(raw_remainder)
+            if raw_remainder:
+                for form_slug in _form_slug_aliases(raw_remainder):
+                    add(f'graphics/pokemon/{raw_prefix}/{form_slug}')
+                    add(f'graphics/pokemon/{raw_prefix}_{form_slug}')
+                    add(f'graphics/pokemon/{raw_prefix}-{form_slug}')
+            add(f'graphics/pokemon/{raw_prefix}')
+
+    return candidates
+
+
+def _resolve_from_exact_dirs(project_dir: Path, index: SpriteIndex, species_id: str, kind: str, raw_token: str) -> tuple[str | None, list[dict[str, str]]]:
+    best_ranked: list[dict[str, str]] = []
+    for rel_dir in _exact_dir_candidates(index, species_id, raw_token):
+        candidates = index.dir_lookup.get(rel_dir, [])
+        resolved, ranked = _resolve_from_candidates(project_dir, candidates, species_id, kind, raw_token, min_score=10)
+        if resolved:
+            return resolved, ranked
+        if ranked and not best_ranked:
+            best_ranked = ranked
+    return None, best_ranked
 
 
 def _candidate_tokens(token: str) -> list[str]:
@@ -217,6 +377,7 @@ def _rank_candidate(project_dir: Path, path: Path, species_id: str, kind: str, r
     slug_bits = [b for b in slug.split('_') if b]
     if slug in rel_lower or all(bit in path_tokens for bit in slug_bits):
         score += 10
+    score += _graphics_species_dir_bonus(rel_lower, species_id)
     score += _exact_species_segment_bonus(rel_lower, species_id)
     score += _extra_form_penalty(path_tokens, species_id)
     if raw_token:
@@ -266,6 +427,7 @@ def _build_lookup_index(project_dir: Path, files: list[Path], progress=None) -> 
     name_lookup: dict[str, list[Path]] = {}
     norm_lookup: dict[str, list[Path]] = {}
     token_lookup: dict[str, list[Path]] = {}
+    dir_lookup: dict[str, list[Path]] = {}
     iterator = files
     total = len(files)
     if progress is not None and total:
@@ -274,6 +436,7 @@ def _build_lookup_index(project_dir: Path, files: list[Path], progress=None) -> 
         rel = str(p.relative_to(project_dir)).replace('\\', '/')
         rel_lookup[rel] = p
         rel_lower = rel.lower()
+        dir_lookup.setdefault(str(Path(rel_lower).parent).replace('\\', '/'), []).append(p)
         name_lookup.setdefault(p.name.lower(), []).append(p)
         for norm in (_normalize_token(rel), _normalize_token(p.stem)):
             if norm:
@@ -282,7 +445,7 @@ def _build_lookup_index(project_dir: Path, files: list[Path], progress=None) -> 
             token_lookup.setdefault(token, []).append(p)
     if progress and getattr(progress, 'enabled', False):
         progress.info('Sprite lookup tables ready')
-    return SpriteIndex(files=files, rel_lookup=rel_lookup, name_lookup=name_lookup, norm_lookup=norm_lookup, token_lookup=token_lookup)
+    return SpriteIndex(files=files, rel_lookup=rel_lookup, name_lookup=name_lookup, norm_lookup=norm_lookup, token_lookup=token_lookup, dir_lookup=dir_lookup)
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -296,6 +459,11 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 
 
 def _resolve_path(project_dir: Path, index: SpriteIndex, species_id: str, kind: str, token: str) -> tuple[str | None, list[dict[str, str]]]:
+    if kind in {'frontPic', 'frontPicFemale', 'backPic', 'backPicFemale'}:
+        resolved, ranked = _resolve_from_exact_dirs(project_dir, index, species_id, kind, token)
+        if resolved:
+            return resolved, ranked
+
     for cand in _candidate_tokens(token):
         raw_path = cand.strip('"')
         maybe = project_dir / raw_path

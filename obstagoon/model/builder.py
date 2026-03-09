@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .schema import AbilityRecord, EncounterArea, EncounterSlot, Evolution, ItemRecord, MoveRecord, ObstagoonModel, SpeciesRecord, SpriteAsset
-from ..normalize import evolution_label, fix_mojibake, format_encounter_method, humanize_stat_key, humanize_symbol, infer_form_name, normalize_move_category, pretty_source_label, slug_from_symbol, unique_preserve_order
+from ..normalize import evolution_label, fix_mojibake, format_encounter_method, humanize_stat_key, humanize_symbol, infer_form_name, normalize_move_category, normalize_move_metric, pretty_source_label, slug_from_symbol, unique_preserve_order
 
 
 PLACEHOLDER_SPECIES = {'SPECIES_NONE'}
@@ -145,7 +145,7 @@ def build_model(project) -> ObstagoonModel:
     _fallback_egg_moves(species_records)
     national_to_species = _choose_representative_species_by_dex(species_records)
 
-    moves = {move_id: MoveRecord(move_id=move_id, name=fix_mojibake(entry.get("name")) or humanize_symbol(move_id) or slug_from_symbol(move_id).replace("-", " ").title(), description=fix_mojibake(entry.get("description")), type=humanize_symbol(entry.get("type")), power=entry.get("power"), accuracy=entry.get("accuracy"), pp=entry.get("pp"), category=normalize_move_category(entry.get("category")), flags=[humanize_symbol(flag) or flag for flag in entry.get("flags", [])]) for move_id, entry in raw["moves"].items()}
+    moves = {move_id: MoveRecord(move_id=move_id, name=fix_mojibake(entry.get("name")) or humanize_symbol(move_id) or slug_from_symbol(move_id).replace("-", " ").title(), description=fix_mojibake(entry.get("description")), type=humanize_symbol(entry.get("type")), power=normalize_move_metric(entry.get("power")), accuracy=normalize_move_metric(entry.get("accuracy")), pp=entry.get("pp"), category=normalize_move_category(entry.get("category")), flags=[humanize_symbol(flag) or flag for flag in entry.get("flags", [])]) for move_id, entry in raw["moves"].items()}
     abilities = {ability_id: AbilityRecord(ability_id=ability_id, name=fix_mojibake(entry.get("name")) or humanize_symbol(ability_id) or slug_from_symbol(ability_id).replace("-", " ").title(), description=fix_mojibake(entry.get("description"))) for ability_id, entry in raw["abilities"].items()}
     items = {item_id: ItemRecord(item_id=item_id, name=fix_mojibake(entry.get("name")) or humanize_symbol(item_id) or slug_from_symbol(item_id).replace("-", " ").title(), description=fix_mojibake(entry.get("description")), pocket=humanize_symbol(entry.get("pocket")), price=entry.get("price")) for item_id, entry in raw["items"].items()}
     encounter_areas = [EncounterArea(map_name=area.get("map"), display_name=fix_mojibake(area.get("display_name")) or slug_from_symbol(area.get("map", "MAP_UNKNOWN")).replace("-", " ").title(), encounters={format_encounter_method(method) or method: [EncounterSlot(species=humanize_symbol(slot.get('species')) or slot.get('species'), min_level=slot.get('min_level'), max_level=slot.get('max_level'), rate=slot.get('rate'), method=format_encounter_method(slot.get('method')) or slot.get('method')) for slot in slots] for method, slots in area.get("encounters", {}).items()}) for area in raw["encounters"]]

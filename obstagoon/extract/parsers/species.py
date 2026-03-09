@@ -221,7 +221,177 @@ def _parse_evolutions(field_value: str) -> list[dict[str, str | None]]:
     return out
 
 
+
+
+
+def _looks_like_species_macro(body: str) -> bool:
+    markers = ('.speciesName', '.baseHP', '.types', '.abilities', '.natDexNum', '.frontPic', '.levelUpLearnset', '.description')
+    return any(marker in body for marker in markers)
+
+
+def _collect_function_macros(text: str) -> dict[str, tuple[list[str], str]]:
+    macros: dict[str, tuple[list[str], str]] = {}
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^\s*#define\s+([A-Z][A-Z0-9_]*)\(([^)]*)\)\s+(.+?)\s*$', line)
+        if not m:
+            i += 1
+            continue
+        name = m.group(1)
+        params = [p.strip() for p in m.group(2).split(',') if p.strip()]
+        body = m.group(3).rstrip()
+        while body.endswith('\\') and i + 1 < len(lines):
+            body = body[:-1].rstrip() + '\n' + lines[i + 1].rstrip()
+            i += 1
+        if _looks_like_species_macro(body):
+            macros[name] = (params, body)
+        i += 1
+    return macros
+
+
+def _collect_object_macros(text: str) -> dict[str, str]:
+    macros: dict[str, str] = {}
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^\s*#define\s+([A-Z][A-Z0-9_]*)(?!\()\b\s+(.+?)\s*$', line)
+        if not m:
+            i += 1
+            continue
+        name = m.group(1)
+        body = m.group(2).rstrip()
+        while body.endswith('\\') and i + 1 < len(lines):
+            body = body[:-1].rstrip() + '\n' + lines[i + 1].rstrip()
+            i += 1
+        if _looks_like_species_macro(body):
+            macros[name] = body
+        i += 1
+    return macros
+
+
+def _substitute_macro_body(body: str, params: list[str], args: list[str]) -> str:
+    out = body
+    for param, arg in zip(params, args):
+        arg = arg.strip()
+        token_arg = re.sub(r'\s+', '', arg)
+        out = re.sub(rf'([A-Za-z0-9_]+)\s*##\s*{re.escape(param)}\b', lambda m: m.group(1) + token_arg, out)
+        out = re.sub(rf'\b{re.escape(param)}\s*##\s*([A-Za-z0-9_]+)', lambda m: token_arg + m.group(1), out)
+        out = re.sub(rf'##\s*{re.escape(param)}\b', token_arg, out)
+        out = re.sub(rf'\b{re.escape(param)}\b', arg, out)
+    out = out.replace('##', '')
+    return out
+
+
+def _expand_species_macros(text: str) -> str:
+    funcs = _collect_function_macros(text)
+    objs = _collect_object_macros(text)
+    if not funcs and not objs:
+        return text
+
+    def expand_in_block(block: str) -> str:
+        changed = True
+        rounds = 0
+        while changed and rounds < 20:
+            changed = False
+            rounds += 1
+            # function-like macros
+            for name, (params, body) in funcs.items():
+                pos = 0
+                pieces: list[str] = []
+                local = False
+                marker = name + '('
+                while True:
+                    idx = block.find(marker, pos)
+                    if idx == -1:
+                        pieces.append(block[pos:])
+                        break
+                    # avoid partial identifier matches
+                    if idx > 0 and re.match(r'[A-Za-z0-9_]', block[idx - 1]):
+                        pieces.append(block[pos:idx + len(name)])
+                        pos = idx + len(name)
+                        continue
+                    open_idx = idx + len(name)
+                    close_idx = find_matching(block, open_idx, '(', ')')
+                    args = split_top_level_csv(block[open_idx + 1:close_idx])
+                    expanded = _substitute_macro_body(body, params, args)
+                    pieces.append(block[pos:idx])
+                    pieces.append(expanded)
+                    pos = close_idx + 1
+                    local = True
+                if local:
+                    block = ''.join(pieces)
+                    changed = True
+            for name, body in objs.items():
+                pat = re.compile(rf'(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])')
+                new_block, count = pat.subn(body, block)
+                if count:
+                    block = new_block
+                    changed = True
+        return block
+
+    out = []
+    pos = 0
+    pat = re.compile(r'\[(SPECIES_[A-Z0-9_]+)\]\s*=')
+    while True:
+        m = pat.search(text, pos)
+        if not m:
+            out.append(text[pos:])
+            break
+        out.append(text[pos:m.end()])
+        i = m.end()
+        while i < len(text) and text[i].isspace():
+            out.append(text[i])
+            i += 1
+        if i >= len(text):
+            pos = i
+            continue
+        if text[i] == '{':
+            end = find_matching(text, i)
+            block = text[i:end + 1]
+            out.append(expand_in_block(block))
+            pos = end + 1
+            continue
+        # macro invocation or object macro until next top-level comma
+        j = i
+        paren = brace = bracket = 0
+        in_string = False
+        prev = ''
+        while j < len(text):
+            ch = text[j]
+            if ch == '"' and prev != '\\':
+                in_string = not in_string
+            elif not in_string:
+                if ch == '(':
+                    paren += 1
+                elif ch == ')':
+                    paren -= 1
+                elif ch == '{':
+                    brace += 1
+                elif ch == '}':
+                    brace -= 1
+                elif ch == '[':
+                    bracket += 1
+                elif ch == ']':
+                    bracket -= 1
+                elif ch == ',' and paren == brace == bracket == 0:
+                    break
+            prev = ch
+            j += 1
+        expr = text[i:j].strip()
+        expanded = expand_in_block(expr)
+        out.append(expanded)
+        pos = j
+    return ''.join(out)
+
+
+
+def _expand_species_function_macros(text: str) -> str:
+    return _expand_species_macros(text)
 def _parse_species_text(text: str, species_to_national: dict[str, int | None], learnsets: dict[str, dict], defines: dict[str, int] | None = None) -> dict[str, dict]:
+    text = _expand_species_macros(text)
     result: dict[str, dict] = {}
     local_defines = dict(defines or {})
     local_defines.update(_collect_numeric_macros(text, defines=local_defines))

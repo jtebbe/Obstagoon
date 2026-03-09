@@ -5,6 +5,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from .species import _expand_species_function_macros
+
 from ..c_utils import (
     find_files,
     find_matching,
@@ -79,9 +81,9 @@ def _load_teachables_from_json(project_dir: Path) -> dict[str, list[dict[str, st
 def parse_learnsets(project_dir: Path, defines: dict[str, int] | None = None) -> dict[str, dict]:
     species_info_path = project_dir / 'src/data/pokemon/species_info.h'
     roots = [project_dir / 'src/data/pokemon', project_dir / 'src/data', project_dir / 'include', project_dir]
-    species_text = strip_comments(preprocess_conditionals(flatten_local_includes(species_info_path, roots=roots), defines)) if species_info_path.exists() else ''
+    species_text = _expand_species_function_macros(strip_comments(preprocess_conditionals(flatten_local_includes(species_info_path, roots=roots), defines))) if species_info_path.exists() else ''
     if species_info_path.exists() and '[SPECIES_' not in species_text:
-        species_text = strip_comments(flatten_local_includes(species_info_path, roots=roots))
+        species_text = _expand_species_function_macros(strip_comments(flatten_local_includes(species_info_path, roots=roots)))
 
     source_files = find_files(
         project_dir,

@@ -154,6 +154,17 @@ def normalize_move_category(value: str | None) -> str | None:
     return mapping.get(text, text)
 
 
+
+def normalize_move_metric(value: str | int | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in {"0", "1"}:
+        return None
+    return text
+
 def type_badge_class(type_name: str | None) -> str:
     if not type_name:
         return 'type-badge type-unknown'
