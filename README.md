@@ -13,6 +13,8 @@ It is intentionally **not** a direct Linoone fork in architecture. Instead, it i
 - expansion wild encounter data
 - expansion sprite/palette/icon references
 
+For the wonderful Linoone documentation generator that works with pokeemerald and not pokeemerald-expansion, please find it here courtesy of huderlem: https://github.com/huderlem/linoone
+
 The goal is to generate a reference site similar to Bulbapedia / Serebii for ROM hacks, while tolerating the much broader data model in `pokeemerald-expansion`.
 
 ## Current design goals
