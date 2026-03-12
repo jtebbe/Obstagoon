@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}{{ trainer.name }} - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>{{ trainer.name }}</h1>
+<section class="card pokemon-hero-card trainer-hero-card">
+  <div class="pokemon-hero trainer-hero">
+    {% if trainer.picture and (trainer.picture.endswith('.png') or trainer.picture.endswith('.webp') or trainer.picture.endswith('.jpg') or trainer.picture.endswith('.jpeg') or trainer.picture.endswith('.gif')) %}
+      <img src="{{ trainer.picture }}" alt="{{ trainer.name }} trainer pic" class="trainer-page-pic">
+    {% endif %}
+    <div>
+      <p><strong>Location:</strong> {{ trainer.location or '—' }}</p>
+      {% if trainer.party_size %}<p><strong>Party Size:</strong> {{ trainer.party_size }}</p>{% endif %}
+      {% if trainer.pool_rules %}<p><strong>Pool Rules:</strong> {{ trainer.pool_rules }}</p>{% endif %}
+      {% if trainer.class_name %}<p><strong>Class:</strong> {{ trainer.class_name }}</p>{% endif %}
+    </div>
+  </div>
+</section>
+<section class="card species-section table-card">
+  <h2>Party{% if trainer.has_party_pool %} Pool{% endif %}</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>Picture</th><th>Types</th><th>Ability</th><th>EVs</th><th>IVs</th><th>Held Item</th><th>Moves</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for mon in trainer.pokemon %}
+        <tr>
+          <td>{% if mon.species_id and mon.species_id in model.species %}<a href="../{{ species_slug_path(model.species[mon.species_id]) }}">{{ mon.species_name }}</a>{% else %}{{ mon.species_name }}{% endif %}{% if mon.nickname %}<div class="muted small-text">Nickname: {{ mon.nickname }}</div>{% endif %}</td>
+          <td>{% if mon.picture and (mon.picture.endswith('.png') or mon.picture.endswith('.webp') or mon.picture.endswith('.jpg') or mon.picture.endswith('.jpeg') or mon.picture.endswith('.gif')) %}<img src="{{ mon.picture }}" alt="{{ mon.species_name }} sprite" class="trainer-mon-sprite">{% else %}—{% endif %}</td>
+          <td>
+            {% if mon.types or mon.tera_type %}
+              <div class="trainer-type-stack">
+                <div class="trainer-types-row">{% if mon.types %}{% for type in mon.types %}<img src="{{ type_icon_path(type) }}" alt="{{ type }} type" class="type-icon">{% if not loop.last %} {% endif %}{% endfor %}{% else %}—{% endif %}</div>
+                {% if mon.tera_type %}<div class="trainer-tera-row"><div class="trainer-tera-spacer"></div><img src="{{ type_icon_path(mon.tera_type) }}" alt="{{ mon.tera_type }} tera type" class="type-icon"></div>{% endif %}
+              </div>
+            {% else %}—{% endif %}
+          </td>
+          <td>{{ mon.ability or '—' }}</td>
+          <td>{% if mon.evs %}{% for stat, value in mon.evs.items() %}{{ value }} {{ stat }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+          <td>{% if mon.ivs %}{% for stat, value in mon.ivs.items() %}{{ value }} {{ stat }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+          <td>{{ mon.held_item or '—' }}</td>
+          <td>{% if mon.moves %}{% for move in mon.moves %}{{ move }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

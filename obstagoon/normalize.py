@@ -52,6 +52,13 @@ def slug_from_symbol(symbol: str) -> str:
     return symbol.lower().replace("_", "-")
 
 
+def safe_filename_slug(value: str | None, default: str = "unknown") -> str:
+    text = slug_from_symbol(value or default).replace('_', '-').lower()
+    text = re.sub(r'[^a-z0-9-]+', '-', text)
+    text = re.sub(r'-{2,}', '-', text).strip('-')
+    return text or default
+
+
 
 
 def fix_mojibake(text: str | None) -> str | None:

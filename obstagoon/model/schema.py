@@ -98,6 +98,36 @@ class SpriteAsset:
 
 
 @dataclass(slots=True)
+class TrainerPokemonRecord:
+    species_id: str | None
+    species_name: str
+    picture: str | None = None
+    types: list[str] = field(default_factory=list)
+    ability: str | None = None
+    tera_type: str | None = None
+    evs: dict[str, str] = field(default_factory=dict)
+    ivs: dict[str, str] = field(default_factory=dict)
+    held_item: str | None = None
+    moves: list[str] = field(default_factory=list)
+    nickname: str | None = None
+    level: str | None = None
+
+
+@dataclass(slots=True)
+class TrainerRecord:
+    trainer_id: str
+    name: str
+    picture: str | None = None
+    location: str | None = None
+    has_party_pool: bool = False
+    party_size: str | None = None
+    pool_rules: str | None = None
+    pokemon: list[TrainerPokemonRecord] = field(default_factory=list)
+    class_name: str | None = None
+    raw_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ObstagoonModel:
     species: dict[str, SpeciesRecord]
     moves: dict[str, MoveRecord]
@@ -109,4 +139,5 @@ class ObstagoonModel:
     species_to_national: dict[str, int]
     national_to_species: dict[int, str]
     forms: dict[str, list[str]]
+    trainers: dict[str, TrainerRecord] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

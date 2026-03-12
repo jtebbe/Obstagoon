@@ -79,3 +79,19 @@ ul { line-height: 1.6; }
 .type-fairy { background: #e98ad7; color: #111827; }
 .type-stellar { background: #8b5cf6; }
 .type-unknown { background: #6b7280; }
+
+.trainer-pic { max-width: 96px; height: auto; image-rendering: pixelated; }
+.trainer-page-pic { max-width: 160px; height: auto; image-rendering: pixelated; }
+.trainer-mon-sprite { max-width: 72px; height: auto; image-rendering: pixelated; }
+.type-icon { width: 76px; height: 24px; vertical-align: middle; }
+.table-scroll { overflow-x: auto; }
+.table-card table { min-width: 1100px; }
+.small-text { font-size: 0.9rem; }
+
+
+.trainer-type-stack { display: flex; flex-direction: column; gap: 0.65rem; }
+.trainer-types-row, .trainer-tera-row { line-height: 1; }
+.trainer-tera-row { margin-top: 0.35rem; display: flex; align-items: center; gap: 0.5rem; }
+.trainer-tera-spacer { width: 0; height: 0; }
+.table-card table th:nth-child(2), .table-card table td:nth-child(2) { width: 88px; }
+.table-card table th:nth-child(8), .table-card table td:nth-child(8) { min-width: 180px; }

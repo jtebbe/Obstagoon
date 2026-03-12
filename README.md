@@ -57,6 +57,9 @@ It is still a porting project rather than a guaranteed drop-in mirror of every e
 
 ```bash
 pip install -r requirements.txt
+
+# optional, only needed for --pillow-transparency
+pip install Pillow
 ```
 
 ## Usage
@@ -74,8 +77,11 @@ python -m obstagoon /path/to/project \
   --dist-dir ./dist \
   --site-url https://example.com/dex \
   --copy-assets \
+  --pillow-transparency \
   --wild-encounters-json ./wild_encounters.json
 ```
+
+`--pillow-transparency` is optional. Without it, Obstagoon copies assets as-is and does not require Pillow.
 
 ## Output
 
@@ -159,6 +165,8 @@ Obstagoon renders color-coded type badges for easier scanning on the Pokédex, m
 ## Asset copying
 
 Use `--copy-assets` when you want web-ready assets copied into the generated site. For a fast data-only build, omit it.
+
+By default, copied PNG assets are left unchanged. To enable the experimental Pillow-based post-processing pass for `graphics/pokemon/.../*.png`, add `--pillow-transparency`. That pass removes every pixel matching the top-left pixel color and crops `anim_front.png` / `front_anim.png` to the top half. Trainer front pics are not altered.
 
 
 ## Generational config support

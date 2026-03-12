@@ -119,3 +119,150 @@ def test_upstream_zygarde_10_power_construct_and_aura_break_use_10_percent_anim_
     sprites = parse_sprite_assets(project, species)
     assert sprites['SPECIES_ZYGARDE_10_AURA_BREAK']['frontPic'] == 'graphics/pokemon/zygarde/10_percent/anim_front.png'
     assert sprites['SPECIES_ZYGARDE_10_POWER_CONSTRUCT']['frontPic'] == 'graphics/pokemon/zygarde/10_percent/anim_front.png'
+
+def test_upstream_arceus_forms_do_not_pick_overworld_when_form_dir_lacks_front_sprite(tmp_path: Path) -> None:
+    project = tmp_path / 'proj'
+    (project / 'graphics/pokemon/arceus').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/arceus/anim_front.png').write_text('base-front')
+    (project / 'graphics/pokemon/arceus/psychic').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/arceus/psychic/overworld.png').write_text('wrong-overworld')
+    (project / 'graphics/pokemon/arceus/psychic/normal.pal').write_text('pal')
+
+    species = {
+        'SPECIES_ARCEUS_PSYCHIC': {'graphics': {'frontPic': 'gMonFrontPic_ArceusPsychic'}},
+    }
+
+    sprites = parse_sprite_assets(project, species)
+    assert sprites['SPECIES_ARCEUS_PSYCHIC']['frontPic'] == 'graphics/pokemon/arceus/anim_front.png'
+
+
+def test_upstream_male_and_pokeball_form_dirs_resolve_to_own_fronts(tmp_path: Path) -> None:
+    from obstagoon.extract.parsers.sprites import parse_sprite_assets
+
+    project = tmp_path
+    (project / 'graphics/pokemon/indeedee/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/indeedee/front.png').write_text('base')
+    (project / 'graphics/pokemon/indeedee/m/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/indeedee/m/front.png').write_text('male')
+
+    (project / 'graphics/pokemon/oinkologne/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/oinkologne/front.png').write_text('base')
+    (project / 'graphics/pokemon/oinkologne/m/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/oinkologne/m/front.png').write_text('male')
+
+    (project / 'graphics/pokemon/vivillon/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/vivillon/front.png').write_text('base')
+    (project / 'graphics/pokemon/vivillon/pokeball/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/vivillon/pokeball/front.png').write_text('pokeball')
+    (project / 'graphics/pokemon/vivillon/icy_snow/front.png').parent.mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/vivillon/icy_snow/front.png').write_text('icy-snow')
+
+    species = {
+        'SPECIES_INDEEDEE_MALE': {'graphics': {'frontPic': 'gMonFrontPic_IndeedeeMale'}},
+        'SPECIES_OINKOLOGNE_MALE': {'graphics': {'frontPic': 'gMonFrontPic_OinkologneMale'}},
+        'SPECIES_VIVILLON_POKE_BALL_PATTERN': {'graphics': {'frontPic': 'gMonFrontPic_VivillonPokeBall'}},
+        'SPECIES_VIVILLON_ICY_SNOW_PATTERN': {'graphics': {'frontPic': 'gMonFrontPic_VivillonIcySnow'}},
+    }
+    sprites = parse_sprite_assets(project, species, cache_dir=project / '.cache')
+
+    assert sprites['SPECIES_INDEEDEE_MALE']['frontPic'] == 'graphics/pokemon/indeedee/m/front.png'
+    assert sprites['SPECIES_OINKOLOGNE_MALE']['frontPic'] == 'graphics/pokemon/oinkologne/m/front.png'
+    assert sprites['SPECIES_VIVILLON_POKE_BALL_PATTERN']['frontPic'] == 'graphics/pokemon/vivillon/pokeball/front.png'
+    assert sprites['SPECIES_VIVILLON_ICY_SNOW_PATTERN']['frontPic'] == 'graphics/pokemon/vivillon/icy_snow/front.png'
+
+
+def test_upstream_form_palettes_resolve_to_own_normal_pal(tmp_path: Path) -> None:
+    project = tmp_path
+    (project / 'graphics/pokemon/indeedee').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/indeedee/normal.pal').write_text('base-pal')
+    (project / 'graphics/pokemon/indeedee/m').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/indeedee/m/front.png').write_text('male-front')
+    (project / 'graphics/pokemon/indeedee/m/normal.pal').write_text('male-pal')
+
+    (project / 'graphics/pokemon/oinkologne').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/oinkologne/normal.pal').write_text('base-pal')
+    (project / 'graphics/pokemon/oinkologne/m').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/oinkologne/m/front.png').write_text('male-front')
+    (project / 'graphics/pokemon/oinkologne/m/normal.pal').write_text('male-pal')
+
+    (project / 'graphics/pokemon/vivillon').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/vivillon/normal.pal').write_text('base-pal')
+    (project / 'graphics/pokemon/vivillon/icy_snow').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/vivillon/icy_snow/front.png').write_text('icy-front')
+    (project / 'graphics/pokemon/vivillon/icy_snow/normal.pal').write_text('icy-pal')
+
+    (project / 'graphics/pokemon/arceus').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/arceus/normal.pal').write_text('base-pal')
+    (project / 'graphics/pokemon/arceus/rock').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/arceus/rock/normal.pal').write_text('rock-pal')
+
+    species = {
+        'SPECIES_INDEEDEE_MALE': {'graphics': {'frontPic': 'IndeedeeMale', 'palette': 'IndeedeeMale'}},
+        'SPECIES_OINKOLOGNE_MALE': {'graphics': {'frontPic': 'OinkologneMale', 'palette': 'OinkologneMale'}},
+        'SPECIES_VIVILLON_ICY_SNOW_PATTERN': {'graphics': {'frontPic': 'VivillonIcySnowPattern', 'palette': 'VivillonIcySnowPattern'}},
+        'SPECIES_ARCEUS_ROCK': {'graphics': {'frontPic': 'ArceusRock', 'palette': 'ArceusRock'}},
+    }
+
+    sprites = parse_sprite_assets(project, species)
+
+    assert sprites['SPECIES_INDEEDEE_MALE']['palette'] == 'graphics/pokemon/indeedee/m/normal.pal'
+    assert sprites['SPECIES_OINKOLOGNE_MALE']['palette'] == 'graphics/pokemon/oinkologne/m/normal.pal'
+    assert sprites['SPECIES_VIVILLON_ICY_SNOW_PATTERN']['palette'] == 'graphics/pokemon/vivillon/icy_snow/normal.pal'
+    assert sprites['SPECIES_ARCEUS_ROCK']['palette'] == 'graphics/pokemon/arceus/rock/normal.pal'
+
+
+def test_upstream_alcremie_pattern_and_cream_palette_resolve_separately(tmp_path: Path) -> None:
+    project = tmp_path
+    (project / 'graphics/pokemon/alcremie').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/front.png').write_text('base-front')
+    (project / 'graphics/pokemon/alcremie/flower').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/flower/front.png').write_text('flower-front')
+    (project / 'graphics/pokemon/alcremie/flower/normal.pal').write_text('flower-pal')
+    (project / 'graphics/pokemon/alcremie/flower/matcha_cream').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/flower/matcha_cream/normal.pal').write_text('matcha-pal')
+
+    species = {
+        'SPECIES_ALCREMIE_FLOWER_MATCHA_CREAM': {'graphics': {'frontPic': 'gMonFrontPic_AlcremieFlower', 'palette': 'gMonPalette_AlcremieFlowerMatchaCream'}},
+    }
+
+    sprites = parse_sprite_assets(project, species)
+    assert sprites['SPECIES_ALCREMIE_FLOWER_MATCHA_CREAM']['frontPic'] == 'graphics/pokemon/alcremie/flower/front.png'
+    assert sprites['SPECIES_ALCREMIE_FLOWER_MATCHA_CREAM']['palette'] == 'graphics/pokemon/alcremie/flower/matcha_cream/normal.pal'
+
+
+def test_upstream_alcremie_pattern_token_in_middle_resolves_pattern_and_cream_palette(tmp_path: Path) -> None:
+    project = tmp_path
+    (project / 'graphics/pokemon/alcremie').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/front.png').write_text('base-front')
+    (project / 'graphics/pokemon/alcremie/flower').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/flower/front.png').write_text('flower-front')
+    (project / 'graphics/pokemon/alcremie/flower/normal.pal').write_text('flower-pal')
+    (project / 'graphics/pokemon/alcremie/flower/matcha_cream').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/flower/matcha_cream/normal.pal').write_text('matcha-pal')
+
+    species = {
+        'SPECIES_ALCREMIE_FLOWER_PATTERN_MATCHA_CREAM': {'graphics': {'frontPic': 'gMonFrontPic_Alcremie', 'palette': 'gMonPalette_AlcremieFlowerPatternMatchaCream'}},
+    }
+
+    sprites = parse_sprite_assets(project, species)
+    assert sprites['SPECIES_ALCREMIE_FLOWER_PATTERN_MATCHA_CREAM']['frontPic'] == 'graphics/pokemon/alcremie/flower/front.png'
+    assert sprites['SPECIES_ALCREMIE_FLOWER_PATTERN_MATCHA_CREAM']['palette'] == 'graphics/pokemon/alcremie/flower/matcha_cream/normal.pal'
+
+
+def test_upstream_alcremie_same_folder_palette_files_resolve_by_form_name(tmp_path: Path) -> None:
+    project = tmp_path
+    (project / 'graphics/pokemon/alcremie/star').mkdir(parents=True, exist_ok=True)
+    (project / 'graphics/pokemon/alcremie/star/front.png').write_text('star-front')
+    (project / 'graphics/pokemon/alcremie/star/star_default.pal').write_text('default-pal')
+    (project / 'graphics/pokemon/alcremie/star/star_caramel_swirl.pal').write_text('caramel-pal')
+    (project / 'graphics/pokemon/alcremie/star/star_shiny.pal').write_text('shiny-pal')
+
+    species = {
+        'SPECIES_ALCREMIE_STAR_DEFAULT': {'graphics': {'frontPic': 'gMonFrontPic_AlcremieStarDefault', 'palette': 'gMonPalette_AlcremieStarDefault'}},
+        'SPECIES_ALCREMIE_STAR_CARAMEL_SWIRL': {'graphics': {'frontPic': 'gMonFrontPic_AlcremieStarCaramelSwirl', 'palette': 'gMonPalette_AlcremieStarCaramelSwirl'}},
+    }
+    sprites = parse_sprite_assets(project, species)
+    assert sprites['SPECIES_ALCREMIE_STAR_DEFAULT']['frontPic'] == 'graphics/pokemon/alcremie/star/front.png'
+    assert sprites['SPECIES_ALCREMIE_STAR_DEFAULT']['palette'] == 'graphics/pokemon/alcremie/star/star_default.pal'
+    assert sprites['SPECIES_ALCREMIE_STAR_CARAMEL_SWIRL']['frontPic'] == 'graphics/pokemon/alcremie/star/front.png'
+    assert sprites['SPECIES_ALCREMIE_STAR_CARAMEL_SWIRL']['palette'] == 'graphics/pokemon/alcremie/star/star_caramel_swirl.pal'

@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Trainers - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Trainers</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="trainerdex-search">Search Trainers</label>
+  <input id="trainerdex-search" class="filter-input" type="search" placeholder="Filter by trainer name, location, class, or Pokémon" data-filter-input data-filter-target="#trainerdex-table tbody tr" data-filter-empty="#trainerdex-empty">
+</div>
+<table id="trainerdex-table">
+  <thead><tr><th>Trainer Name</th><th>Trainer Pic</th><th>Trainer Location</th></tr></thead>
+  <tbody>
+  {% for trainer in trainers %}
+    <tr data-search-text="{{ trainer.name }} {{ trainer.location or '' }} {{ trainer.class_name or '' }} {% for mon in trainer.pokemon %}{{ mon.species_name }} {% endfor %}">
+      <td><a href="{{ slug_from_symbol(trainer.trainer_id) }}.html">{{ trainer.name }}</a></td>
+      <td>{% if trainer.picture and (trainer.picture.endswith('.png') or trainer.picture.endswith('.webp') or trainer.picture.endswith('.jpg') or trainer.picture.endswith('.jpeg') or trainer.picture.endswith('.gif')) %}<img src="{{ trainer.picture }}" alt="{{ trainer.name }} trainer pic" class="trainer-pic">{% else %}—{% endif %}</td>
+      <td>{{ trainer.location or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p id="trainerdex-empty" class="filter-empty" style="display:none;">No trainers match that search.</p>
+{% endblock %}

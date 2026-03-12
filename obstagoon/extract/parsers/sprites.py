@@ -8,7 +8,7 @@ from pathlib import Path
 from ..c_utils import build_file_index
 
 RASTER_SUFFIXES = ('.png', '.webp', '.jpg', '.jpeg', '.gif')
-PALETTE_SUFFIXES = ('.pal', '.gbapal')
+PALETTE_SUFFIXES = ('.pal',)
 TILE_SUFFIXES = ('.4bpp.lz', '.4bpp', '.lz')
 ASSET_SUFFIXES = RASTER_SUFFIXES + PALETTE_SUFFIXES + TILE_SUFFIXES
 
@@ -85,8 +85,8 @@ def _path_kind_bonus(path: Path, kind: str) -> int:
             score -= 28
         if '/icon' in rel or 'icon' in stem:
             score -= 24
-        if '/world/' in rel:
-            score -= 60
+        if '/world/' in rel or 'overworld' in stem or '/overworld' in rel:
+            score -= 90
         if 'tera' in rel or 'teal' in rel:
             score -= 18
         if 'anim_front' in stem:
@@ -199,13 +199,24 @@ def _strip_form_suffix_tokens(tokens: list[str]) -> list[str]:
     return trimmed
 
 
+def _form_token_variants(tokens: list[str]) -> list[list[str]]:
+    variants: list[list[str]] = []
+    for candidate in (list(tokens), _strip_form_suffix_tokens(tokens), [t for t in tokens if t not in {'pattern', 'form', 'mode'}]):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
 def _form_slug_aliases(tokens: list[str]) -> list[str]:
     if not tokens:
         return []
     candidates: list[str] = []
 
-    def add(parts: list[str]) -> None:
-        slug = '_'.join(parts)
+    def add(parts: list[str] | tuple[str, ...] | str) -> None:
+        if isinstance(parts, str):
+            slug = parts
+        else:
+            slug = '_'.join(parts)
         if slug and slug not in candidates:
             candidates.append(slug)
 
@@ -218,8 +229,24 @@ def _form_slug_aliases(tokens: list[str]) -> list[str]:
             add(['10', 'percent'])
         if only == '50percent':
             add(['50', 'percent'])
+        if only == 'male':
+            add('m')
+        if only == 'female':
+            add('f')
+        if only == 'pokeball':
+            add('poke_ball')
+        if only == 'm':
+            add('male')
+        if only == 'f':
+            add('female')
     if len(tokens) == 2 and tokens[1] == 'percent' and tokens[0] in {'10', '50'}:
-        add([f"{tokens[0]}percent"])
+        add(f"{tokens[0]}percent")
+    if tokens == ['poke', 'ball']:
+        add('pokeball')
+        add('poke_ball')
+    if tokens == ['icy', 'snow']:
+        add('icy_snow')
+        add('icysnow')
 
     # Upstream form layouts sometimes keep additional qualifiers on the species symbol
     # but store the actual art under a shared percent-form directory.
@@ -233,6 +260,31 @@ def _form_slug_aliases(tokens: list[str]) -> list[str]:
             candidates.append(compact_percent_slug)
     return candidates
 
+
+
+
+def _form_dir_path_aliases(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+
+    candidates: list[str] = []
+
+    def add(path: str) -> None:
+        if path and path not in candidates:
+            candidates.append(path)
+
+    def walk(start: int, parts: list[str]) -> None:
+        if start >= len(tokens):
+            add('/'.join(parts))
+            return
+        for end in range(start + 1, len(tokens) + 1):
+            segment = tokens[start:end]
+            aliases = _form_slug_aliases(segment) or ['_'.join(segment)]
+            for alias in aliases:
+                walk(end, [*parts, alias])
+
+    walk(0, [])
+    return candidates
 
 def _longest_existing_species_prefix(index: SpriteIndex, slug: str) -> tuple[str | None, list[str]]:
     tokens = _split_slug_tokens(slug)
@@ -267,43 +319,101 @@ def _raw_token_slug_variants(token: str) -> list[str]:
 
 def _exact_dir_candidates(index: SpriteIndex, species_id: str, token: str) -> list[str]:
     candidates: list[str] = []
+    fallback_dirs: list[str] = []
 
-    def add(rel_dir: str | None) -> None:
-        if rel_dir and rel_dir in index.dir_lookup and rel_dir not in candidates:
-            candidates.append(rel_dir)
+    def add(rel_dir: str | None, *, fallback: bool = False) -> None:
+        if not rel_dir or rel_dir not in index.dir_lookup:
+            return
+        target = fallback_dirs if fallback else candidates
+        if rel_dir not in candidates and rel_dir not in fallback_dirs:
+            target.append(rel_dir)
 
     slug = _species_slug(species_id)
-    add(f'graphics/pokemon/{slug}')
 
     prefix, remainder = _longest_existing_species_prefix(index, slug)
     if prefix:
-        remainder = _strip_form_suffix_tokens(remainder)
-        if remainder:
-            for form_slug in _form_slug_aliases(remainder):
-                add(f'graphics/pokemon/{prefix}/{form_slug}')
-                add(f'graphics/pokemon/{prefix}_{form_slug}')
-                add(f'graphics/pokemon/{prefix}-{form_slug}')
-        add(f'graphics/pokemon/{prefix}')
+        for remainder_variant in _form_token_variants(remainder):
+            if remainder_variant:
+                for form_path in _form_dir_path_aliases(remainder_variant):
+                    add(f'graphics/pokemon/{prefix}/{form_path}')
+                for form_slug in _form_slug_aliases(remainder_variant):
+                    add(f'graphics/pokemon/{prefix}_{form_slug}')
+                    add(f'graphics/pokemon/{prefix}-{form_slug}')
+                for i in range(1, len(remainder_variant)):
+                    prefix_variant = remainder_variant[:i]
+                    for form_path in _form_dir_path_aliases(prefix_variant):
+                        add(f'graphics/pokemon/{prefix}/{form_path}', fallback=True)
+                    for form_slug in _form_slug_aliases(prefix_variant):
+                        add(f'graphics/pokemon/{prefix}_{form_slug}', fallback=True)
+                        add(f'graphics/pokemon/{prefix}-{form_slug}', fallback=True)
+        add(f'graphics/pokemon/{prefix}', fallback=True)
 
     for raw_slug in _raw_token_slug_variants(token):
         add(f'graphics/pokemon/{raw_slug}')
         raw_prefix, raw_remainder = _longest_existing_species_prefix(index, raw_slug)
         if raw_prefix:
-            raw_remainder = _strip_form_suffix_tokens(raw_remainder)
-            if raw_remainder:
-                for form_slug in _form_slug_aliases(raw_remainder):
-                    add(f'graphics/pokemon/{raw_prefix}/{form_slug}')
-                    add(f'graphics/pokemon/{raw_prefix}_{form_slug}')
-                    add(f'graphics/pokemon/{raw_prefix}-{form_slug}')
-            add(f'graphics/pokemon/{raw_prefix}')
+            for raw_variant in _form_token_variants(raw_remainder):
+                if raw_variant:
+                    for form_path in _form_dir_path_aliases(raw_variant):
+                        add(f'graphics/pokemon/{raw_prefix}/{form_path}')
+                    for form_slug in _form_slug_aliases(raw_variant):
+                        add(f'graphics/pokemon/{raw_prefix}_{form_slug}')
+                        add(f'graphics/pokemon/{raw_prefix}-{form_slug}')
+                    for i in range(1, len(raw_variant)):
+                        prefix_variant = raw_variant[:i]
+                        for form_path in _form_dir_path_aliases(prefix_variant):
+                            add(f'graphics/pokemon/{raw_prefix}/{form_path}', fallback=True)
+                        for form_slug in _form_slug_aliases(prefix_variant):
+                            add(f'graphics/pokemon/{raw_prefix}_{form_slug}', fallback=True)
+                            add(f'graphics/pokemon/{raw_prefix}-{form_slug}', fallback=True)
+            add(f'graphics/pokemon/{raw_prefix}', fallback=True)
 
-    return candidates
+    add(f'graphics/pokemon/{slug}', fallback=True)
+    return candidates + fallback_dirs
+
+
+def _explicit_kind_candidates(candidates: list[Path], kind: str) -> list[Path]:
+    if not candidates:
+        return []
+    wanted = None
+    if kind.startswith('front'):
+        wanted = 'front'
+    elif kind.startswith('back'):
+        wanted = 'back'
+    elif kind.startswith('icon'):
+        wanted = 'icon'
+    elif 'palette' in kind.lower():
+        wanted = 'pal'
+    if wanted is None:
+        return candidates
+
+    filtered: list[Path] = []
+    for path in candidates:
+        rel = str(path).replace('\\', '/').lower()
+        stem = path.stem.lower()
+        toks = _tokenize_pathish(rel)
+        if wanted == 'front':
+            if 'front' in toks or 'anim_front' in stem or stem == 'front':
+                filtered.append(path)
+        elif wanted == 'back':
+            if 'back' in toks or stem == 'back':
+                filtered.append(path)
+        elif wanted == 'icon':
+            if 'icon' in toks or stem in {'icon', 'iconsprite'}:
+                filtered.append(path)
+        elif wanted == 'pal':
+            if 'pal' in stem or 'palette' in toks:
+                filtered.append(path)
+    return filtered
 
 
 def _resolve_from_exact_dirs(project_dir: Path, index: SpriteIndex, species_id: str, kind: str, raw_token: str) -> tuple[str | None, list[dict[str, str]]]:
     best_ranked: list[dict[str, str]] = []
     for rel_dir in _exact_dir_candidates(index, species_id, raw_token):
         candidates = index.dir_lookup.get(rel_dir, [])
+        strict_candidates = _explicit_kind_candidates(candidates, kind)
+        if strict_candidates:
+            candidates = strict_candidates
         resolved, ranked = _resolve_from_candidates(project_dir, candidates, species_id, kind, raw_token, min_score=10)
         if resolved:
             return resolved, ranked
@@ -459,7 +569,7 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 
 
 def _resolve_path(project_dir: Path, index: SpriteIndex, species_id: str, kind: str, token: str) -> tuple[str | None, list[dict[str, str]]]:
-    if kind in {'frontPic', 'frontPicFemale', 'backPic', 'backPicFemale'}:
+    if kind in {'frontPic', 'frontPicFemale', 'backPic', 'backPicFemale', 'palette', 'paletteFemale', 'shinyPalette', 'shinyPaletteFemale'}:
         resolved, ranked = _resolve_from_exact_dirs(project_dir, index, species_id, kind, token)
         if resolved:
             return resolved, ranked

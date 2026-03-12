@@ -1,13 +1,55 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import struct
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from PIL import Image
+from xml.sax.saxutils import escape
 
 from ..config import SiteConfig
-from ..model.schema import ObstagoonModel, SpeciesRecord
-from ..normalize import format_encounter_method, humanize_symbol, slug_from_symbol, type_badge_class
+from ..model.schema import ObstagoonModel, SpeciesRecord, TrainerRecord
+from ..normalize import format_encounter_method, humanize_symbol, slug_from_symbol, safe_filename_slug, type_badge_class
 from ..progress import ProgressReporter
+
+
+
+
+def _load_pillow_image_module():
+    try:
+        from PIL import Image as PILImage
+    except ImportError as exc:
+        raise RuntimeError(
+            "--pillow-transparency was requested, but Pillow is not installed. Install it with 'python3 -m pip install Pillow' or omit --pillow-transparency."
+        ) from exc
+    return PILImage
+
+TYPE_ICON_COLORS = {
+    'normal': '#8f8a81',
+    'fire': '#e76f51',
+    'water': '#4d90fe',
+    'electric': '#f4c430',
+    'grass': '#43aa57',
+    'ice': '#58c4dd',
+    'fighting': '#c65b3d',
+    'poison': '#9c6ade',
+    'ground': '#c59b55',
+    'flying': '#7c8cff',
+    'psychic': '#ff5d8f',
+    'bug': '#93b125',
+    'rock': '#b49b55',
+    'ghost': '#6f62b5',
+    'dragon': '#5a64ea',
+    'dark': '#705848',
+    'steel': '#8aa1b1',
+    'fairy': '#e98ad7',
+    'stellar': '#8b5cf6',
+    'unknown': '#6b7280',
+}
 
 
 class SiteGenerator:
@@ -22,11 +64,13 @@ class SiteGenerator:
         }
 
     def run(self) -> None:
-        self.progress = ProgressReporter(enabled=self.config.verbose, total_steps=12 if self.config.copy_assets else 11)
+        self.progress = ProgressReporter(enabled=self.config.verbose, total_steps=14 if self.config.copy_assets else 13)
         self.progress.step('Preparing output directories')
         self._prepare_dirs()
         self.progress.step('Writing CSS')
         self._write_css()
+        self.progress.step('Writing generated type icons')
+        self._write_type_icons()
         if self.config.copy_assets:
             self.progress.step('Copying sprite and asset files')
             self._copy_assets()
@@ -49,10 +93,12 @@ class SiteGenerator:
         self._render_forms()
         self.progress.step('Rendering encounters')
         self._render_encounters()
+        self.progress.step('Rendering trainerdex')
+        self._render_trainerdex()
         self.progress.info('Build complete')
 
     def _prepare_dirs(self) -> None:
-        for rel in ['pokedex', 'moves', 'abilities', 'types', 'forms', 'encounters', 'assets']:
+        for rel in ['pokedex', 'moves', 'abilities', 'types', 'forms', 'encounters', 'trainerdex', 'assets', 'assets/generated/types']:
             (self.config.dist_dir / rel).mkdir(parents=True, exist_ok=True)
 
     def _ctx(self, **extra):
@@ -63,6 +109,9 @@ class SiteGenerator:
             'humanize_symbol': humanize_symbol,
             'slug_from_symbol': slug_from_symbol,
             'type_badge_class': type_badge_class,
+            'type_icon_path': self._type_icon_path,
+            'trainer_slug_path': self._trainer_slug_path,
+            'species_slug_path': self._species_slug_path,
             **extra,
         }
 
@@ -77,6 +126,28 @@ class SiteGenerator:
         css = (Path(__file__).resolve().parent.parent / 'templates' / 'style.css').read_text(encoding='utf-8')
         (self.config.dist_dir / 'assets' / 'style.css').write_text(css, encoding='utf-8')
 
+    def _type_icon_path(self, type_name: str | None) -> str:
+        slug = safe_filename_slug(type_name or 'unknown')
+        return f'../assets/generated/types/{slug}.svg'
+
+    def _write_type_icons(self) -> None:
+        out_dir = self.config.dist_dir / 'assets' / 'generated' / 'types'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        labels: dict[str, str] = {safe_filename_slug(label): label.replace('-', ' ').title() for label in TYPE_ICON_COLORS}
+        for raw_value in self.model.types.values():
+            display_title = humanize_symbol(raw_value) or str(raw_value or 'Unknown').replace('-', ' ').title()
+            labels[safe_filename_slug(raw_value)] = display_title
+        for slug, title in sorted(labels.items()):
+            color = TYPE_ICON_COLORS.get(slug, TYPE_ICON_COLORS['unknown'])
+            fg = '#111827' if slug in {'electric', 'ground', 'bug', 'ice', 'steel', 'fairy'} else '#f9fafb'
+            svg = (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="76" height="24" viewBox="0 0 76 24" role="img" aria-label="{escape(title)} type">'
+                f'<rect x="0.5" y="0.5" rx="12" ry="12" width="75" height="23" fill="{color}" stroke="rgba(255,255,255,0.18)"/>'
+                f'<text x="38" y="15" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="{fg}">{escape(title.upper())}</text>'
+                '</svg>'
+            )
+            (out_dir / f'{slug}.svg').write_text(svg, encoding='utf-8')
+
     def _write_manifest(self) -> None:
         payload = {
             'metadata': self.model.metadata,
@@ -84,6 +155,7 @@ class SiteGenerator:
             'moves': len(self.model.moves),
             'abilities': len(self.model.abilities),
             'encounters': len(self.model.encounters),
+            'trainers': len(self.model.trainers),
             'validation_summary': self.model.metadata.get('validation', {}).get('summary', {}),
             'sprite_diagnostics_summary': {
                 'missing_species': len(self.model.metadata.get('sprite_diagnostics', {}).get('missing', {})),
@@ -116,8 +188,6 @@ class SiteGenerator:
 
     def _display_graphics_for_species(self, species: SpeciesRecord) -> dict[str, str]:
         graphics = dict(species.graphics)
-        # For representative/base display pages, prefer this species's own base-form graphics.
-        # Only inherit from base species when the current species is itself a form and the field is missing.
         if species.base_species and species.base_species in self.model.species:
             base = self.model.species[species.base_species]
             for key in ('frontPic', 'palette', 'backPic', 'iconSprite'):
@@ -126,7 +196,6 @@ class SiteGenerator:
         for key in ('backPic', 'backPicFemale'):
             graphics[key] = self._prefer_non_shiny_back_sprite(graphics.get(key))
         return graphics
-
 
     def _encounters_for_species(self, species: SpeciesRecord) -> list[dict]:
         matches = []
@@ -157,6 +226,9 @@ class SiteGenerator:
 
     def _species_slug_path(self, species: SpeciesRecord) -> str:
         return f'pokedex/{slug_from_symbol(species.species_id)}.html'
+
+    def _trainer_slug_path(self, trainer: TrainerRecord) -> str:
+        return f'trainerdex/{slug_from_symbol(trainer.trainer_id)}.html'
 
     def _render_species_pages(self) -> None:
         species_values = sorted(self.model.species.values(), key=lambda s: (s.national_dex is None, s.national_dex or 99999, s.base_species is not None, s.form_index or 0, s.name))
@@ -195,6 +267,12 @@ class SiteGenerator:
     def _render_encounters(self) -> None:
         self._render('encounters.html', 'encounters/index.html', encounters=self.model.encounters)
 
+    def _render_trainerdex(self) -> None:
+        trainers = sorted(self.model.trainers.values(), key=lambda t: t.name)
+        self._render('trainerdex_index.html', 'trainerdex/index.html', trainers=trainers)
+        for trainer in self.progress.iter(trainers, 'trainer pages', every=25, detail=lambda t: t.name):
+            self._render('trainer.html', self._trainer_slug_path(trainer), trainer=trainer)
+
     def _load_asset_cache(self) -> dict:
         path = self.config.cache_dir / 'asset_copy_cache.json'
         if not path.exists():
@@ -208,6 +286,298 @@ class SiteGenerator:
         path = self.config.cache_dir / 'asset_copy_cache.json'
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
 
+    def _should_process_transparent_sprite(self, rel: Path) -> bool:
+        rel_posix = rel.as_posix().lower()
+        if not rel_posix.endswith('.png'):
+            return False
+        return rel_posix.startswith('graphics/pokemon/')
+
+    def _should_crop_top_half(self, rel: Path) -> bool:
+        rel_posix = rel.as_posix().lower()
+        if not rel_posix.endswith('.png'):
+            return False
+        if not rel_posix.startswith('graphics/pokemon/'):
+            return False
+        name = rel.name.lower()
+        return name in {'anim_front.png', 'front_anim.png'}
+
+    def _load_binary_palette(self, palette_path: Path) -> list[int] | None:
+        suffix = palette_path.suffix.lower()
+        if suffix != '.pal':
+            return None
+        data = palette_path.read_bytes()
+        if not data:
+            return None
+        if data.startswith(b'JASC-PAL'):
+            lines = [line.strip() for line in data.decode('utf-8', errors='ignore').splitlines() if line.strip()]
+            try:
+                count = int(lines[2])
+                entries = [tuple(map(int, line.split()[:3])) for line in lines[3:3 + count]]
+            except Exception:
+                return None
+            flat: list[int] = []
+            for r, g, b in entries:
+                flat.extend((max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))))
+            return flat
+        if len(data) % 2 != 0:
+            return None
+        flat: list[int] = []
+        for i in range(0, len(data), 2):
+            value = struct.unpack_from('<H', data, i)[0]
+            r = (value & 0x1F) * 255 // 31
+            g = ((value >> 5) & 0x1F) * 255 // 31
+            b = ((value >> 10) & 0x1F) * 255 // 31
+            flat.extend((r, g, b))
+        return flat
+
+    def _find_source_palette_for_sprite(self, source_path: Path, target_palette_path: Path | None) -> Path | None:
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+        target_resolved = target_palette_path.resolve() if target_palette_path is not None else None
+
+        def add(path: Path | None, *, allow_target: bool = False) -> None:
+            if path is None:
+                return
+            path = path.resolve()
+            if not allow_target and target_resolved is not None and path == target_resolved:
+                return
+            if path in seen:
+                return
+            seen.add(path)
+            candidates.append(path)
+
+        source_parent = source_path.parent.resolve()
+        if target_palette_path is not None:
+            target_parent = target_palette_path.parent.resolve()
+            if source_parent == target_parent:
+                prefix = f"{source_parent.name.lower()}_"
+                target_stem = target_palette_path.stem.lower()
+                if target_stem.startswith(prefix):
+                    add(source_parent / f"{source_parent.name.lower()}_default.pal")
+                    add(source_parent / f"{source_parent.name.lower()}_normal.pal")
+                    # Same-folder variant palettes (notably Alcremie) still need a source
+                    # palette for RGBA quantization. For *_default targets, the target
+                    # palette itself is the correct source reference.
+                    if target_stem.endswith('_default'):
+                        add(target_palette_path, allow_target=True)
+
+        for directory in (source_path.parent, *source_path.parent.parents):
+            for name in ('normal.pal', 'palette.pal'):
+                add(directory / name)
+            if directory.name == 'graphics':
+                break
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _palette_image_from_flat(self, palette: list[int]) -> 'Image.Image':
+        Image = _load_pillow_image_module()
+        pal_img = Image.new('P', (1, 1))
+        padded = list(palette[:768])
+        if len(padded) < 768:
+            padded.extend([0] * (768 - len(padded)))
+        pal_img.putpalette(padded)
+        return pal_img
+
+    def _padded_palette(self, palette: list[int] | None) -> list[int]:
+        padded = list((palette or [])[:768])
+        if len(padded) < 768:
+            padded.extend([0] * (768 - len(padded)))
+        return padded
+
+    def _palette_triplets(self, palette: list[int] | None) -> list[tuple[int, int, int]]:
+        padded = self._padded_palette(palette)
+        return [tuple(padded[i:i + 3]) for i in range(0, 768, 3)]
+
+    def _remap_paletted_image_to_source_palette(self, image: 'Image.Image', source_palette: list[int]) -> 'Image.Image':
+        current_palette = self._padded_palette(list(image.getpalette() or []))
+        current_triplets = [tuple(current_palette[i:i + 3]) for i in range(0, 768, 3)]
+        source_triplets = self._palette_triplets(source_palette)
+        source_entry_count = max(1, min(256, len(source_palette) // 3))
+
+        exact_index: dict[tuple[int, int, int], int] = {}
+        for idx, color in enumerate(source_triplets[:source_entry_count]):
+            exact_index.setdefault(color, idx)
+
+        mapping: list[int] = []
+        for idx, color in enumerate(current_triplets):
+            if idx >= source_entry_count:
+                mapping.append(idx)
+                continue
+            if color in exact_index:
+                mapping.append(exact_index[color])
+                continue
+            best_idx = idx
+            best_dist = None
+            for src_idx, candidate in enumerate(source_triplets[:source_entry_count]):
+                dist = ((color[0] - candidate[0]) ** 2) + ((color[1] - candidate[1]) ** 2) + ((color[2] - candidate[2]) ** 2)
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = src_idx
+            mapping.append(best_idx)
+
+        pal_image = image.copy()
+        pixel_data = list(pal_image.getdata())
+        remapped_data = [mapping[pixel] if 0 <= pixel < len(mapping) else pixel for pixel in pixel_data]
+        pal_image.putdata(remapped_data)
+        merged_palette = current_palette[:]
+        source_padded = self._padded_palette(source_palette)
+        replace_len = min(len(source_palette), len(merged_palette))
+        merged_palette[:replace_len] = source_padded[:replace_len]
+        pal_image.putpalette(merged_palette)
+        transparency = image.info.get('transparency')
+        if transparency is not None:
+            if isinstance(transparency, (bytes, bytearray)):
+                pal_image.info['transparency'] = transparency
+            elif isinstance(transparency, int):
+                pal_image.info['transparency'] = mapping[transparency] if 0 <= transparency < len(mapping) else transparency
+        return pal_image
+
+    def _recolor_rgba_with_palettes(self, image: 'Image.Image', source_palette: list[int], target_palette: list[int]) -> 'Image.Image':
+        rgba = image.convert('RGBA')
+        alpha = rgba.getchannel('A')
+        source_pal_img = self._palette_image_from_flat(source_palette)
+        indexed = rgba.convert('RGB').quantize(palette=source_pal_img, dither=0)
+        target_pal_img = indexed.copy()
+        padded = list(target_palette[:768])
+        if len(padded) < 768:
+            padded.extend([0] * (768 - len(padded)))
+        target_pal_img.putpalette(padded)
+        recolored = target_pal_img.convert('RGBA')
+        recolored.putalpha(alpha)
+        return recolored
+
+    def _apply_palette_to_png(self, image: 'Image.Image', palette_path: Path | None, source_path: Path | None = None) -> 'Image.Image':
+        if palette_path is None or not palette_path.exists() or not palette_path.is_file():
+            return image
+        target_palette = self._load_binary_palette(palette_path)
+        if not target_palette:
+            return image
+
+        source_palette_path = self._find_source_palette_for_sprite(source_path or palette_path, palette_path) if source_path else None
+        source_palette = self._load_binary_palette(source_palette_path) if source_palette_path else None
+
+        if image.mode == 'P':
+            pal_image = image.copy()
+            if source_palette:
+                pal_image = self._remap_paletted_image_to_source_palette(pal_image, source_palette)
+            current_palette = self._padded_palette(list(pal_image.getpalette() or []))
+            replacement = self._padded_palette(target_palette)
+            replace_len = min(len(target_palette), len(current_palette))
+            current_palette[:replace_len] = replacement[:replace_len]
+            pal_image.putpalette(current_palette[:768])
+            transparency = pal_image.info.get('transparency', image.info.get('transparency'))
+            if transparency is not None:
+                pal_image.info['transparency'] = transparency
+            return pal_image
+
+        if source_palette:
+            return self._recolor_rgba_with_palettes(image, source_palette, target_palette)
+        return image
+
+    def _make_png_background_transparent(self, image: 'Image.Image') -> 'Image.Image':
+        rgba = image.convert('RGBA')
+        width, height = rgba.size
+        if width <= 0 or height <= 0:
+            return rgba
+        bg = rgba.getpixel((0, 0))
+        px = rgba.load()
+        for y in range(height):
+            for x in range(width):
+                cur = px[x, y]
+                if cur[:3] == bg[:3]:
+                    px[x, y] = (cur[0], cur[1], cur[2], 0)
+        return rgba
+
+    def _palette_variant_rel(self, rel: Path, palette_source: str | None) -> Path:
+        if not palette_source:
+            return rel
+        palette_rel = Path(str(palette_source).replace('\\', '/'))
+        rel_posix = rel.as_posix().lower()
+        palette_parent = palette_rel.parent
+        if rel_posix.startswith('graphics/pokemon/') and palette_parent.as_posix().lower().startswith('graphics/pokemon/'):
+            if palette_parent != rel.parent:
+                return palette_parent / rel.name
+            palette_stem = palette_rel.stem.lower()
+            parent_name = rel.parent.name.lower()
+            prefix = f"{parent_name}_"
+            if palette_stem.startswith(prefix):
+                variant_slug = re.sub(r'[^a-z0-9_]+', '_', palette_stem[len(prefix):].lower()).strip('_') or 'variant'
+                return rel.parent / variant_slug / rel.name
+        palette_key = safe_filename_slug(palette_rel.with_suffix('').as_posix()) or 'palette'
+        return rel.with_name(f"{rel.stem}__pal__{palette_key}{rel.suffix}")
+
+    def _should_apply_palette_variant(self, resolved_rel: Path, palette_rel: str | None) -> bool:
+        if not palette_rel:
+            return False
+        rel_posix = resolved_rel.as_posix().lower()
+        if not rel_posix.startswith('graphics/pokemon/') or not rel_posix.endswith('.png'):
+            return False
+        palette_path = Path(str(palette_rel).replace('\\', '/'))
+        if palette_path.suffix.lower() != '.pal':
+            return False
+        stem = palette_path.stem.lower()
+        if 'shiny' in stem or 'shiny' in palette_path.as_posix().lower():
+            return False
+        if any(tok in stem for tok in ('4bpp', '1bpp', 'smol')) or any(tok in palette_path.as_posix().lower() for tok in ('4bpp', '1bpp', 'smol', '.gbapal')):
+            return False
+        # Shared-source recolors: palette lives in a different folder than the chosen sprite.
+        if palette_path.parent != resolved_rel.parent:
+            return True
+        # Same-folder generated variants like Alcremie's pattern_default.pal / pattern_matcha_cream.pal.
+        parent_name = resolved_rel.parent.name.lower()
+        return stem.startswith(f"{parent_name}_")
+
+    def _resolve_palette_sprite_source(self, source: Path, palette_path: Path | None) -> Path:
+        if palette_path is None or not palette_path.exists() or not source.exists():
+            return source
+        if source.suffix.lower() != '.png':
+            return source
+        try:
+            source_rel = source.relative_to(self.config.project_dir)
+            palette_rel = palette_path.relative_to(self.config.project_dir)
+        except ValueError:
+            return source
+        if not source_rel.as_posix().lower().startswith('graphics/pokemon/'):
+            return source
+        if not palette_rel.as_posix().lower().startswith('graphics/pokemon/'):
+            return source
+
+        preferred_names = [source.name]
+        if source.name == 'anim_front.png':
+            preferred_names.append('front.png')
+        elif source.name == 'front.png':
+            preferred_names.append('anim_front.png')
+
+        seen: set[Path] = set()
+        for directory in (palette_path.parent, *palette_path.parent.parents):
+            if directory in seen:
+                continue
+            seen.add(directory)
+            for filename in preferred_names:
+                candidate = directory / filename
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            if directory == self.config.project_dir:
+                break
+        return source
+
+    def _process_png_asset(self, source: Path, rel: Path, target: Path, palette_source: str | None = None, *, apply_palette: bool = True) -> None:
+        Image = _load_pillow_image_module()
+        with Image.open(source) as img:
+            processed = img.copy()
+            if apply_palette and palette_source:
+                palette_candidate = self.config.project_dir / str(palette_source).replace('\\', '/')
+                processed = self._apply_palette_to_png(processed, palette_candidate, source)
+            if self._should_crop_top_half(rel):
+                crop_h = max(1, processed.height // 2)
+                processed = processed.crop((0, 0, processed.width, crop_h))
+            if self._should_process_transparent_sprite(rel):
+                processed = self._make_png_background_transparent(processed)
+            processed.save(target)
+
     def _copy_assets(self) -> None:
         assets_root = self.config.dist_dir / 'assets' / 'game'
         assets_root.mkdir(parents=True, exist_ok=True)
@@ -216,33 +586,85 @@ class SiteGenerator:
         copied_count = 0
         skipped_count = 0
         cache_entries = cache.get('files', {}) if isinstance(cache.get('files', {}), dict) else {}
+
+        def copy_source_path(source: str | None, *, palette_source: str | None = None) -> str | None:
+            nonlocal copied_count, skipped_count
+            if not source:
+                return source
+            source_str = str(source).replace('\\', '/')
+            candidate = self.config.project_dir / source_str
+            if not candidate.exists() or not candidate.is_file():
+                return source_str
+            rel = Path(source_str)
+            palette_rel = str(palette_source).replace('\\', '/') if palette_source else None
+            palette_candidate = self.config.project_dir / palette_rel if palette_rel else None
+            resolved_candidate = self._resolve_palette_sprite_source(candidate, palette_candidate) if (self.config.pillow_transparency and palette_rel) else candidate
+            try:
+                resolved_rel = resolved_candidate.relative_to(self.config.project_dir)
+            except ValueError:
+                resolved_rel = rel
+            rel_posix = resolved_rel.as_posix().lower()
+            source_palette_path = self._find_source_palette_for_sprite(resolved_candidate, palette_candidate) if (self.config.pillow_transparency and palette_candidate is not None and palette_candidate.exists() and palette_candidate.is_file()) else None
+            should_apply_palette = bool(
+                self.config.pillow_transparency
+                and palette_candidate is not None
+                and palette_candidate.exists()
+                and palette_candidate.is_file()
+                and self._should_apply_palette_variant(resolved_rel, palette_rel)
+            )
+            effective_rel = resolved_rel
+            if should_apply_palette:
+                effective_rel = self._palette_variant_rel(resolved_rel, palette_rel)
+            target = assets_root / effective_rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source_stat = resolved_candidate.stat()
+            palette_sig: dict[str, int | str | bool | None] = {'palette_source': palette_rel, 'resolved_source': resolved_rel.as_posix()}
+            if palette_candidate and palette_candidate.exists() and palette_candidate.is_file():
+                palette_stat = palette_candidate.stat()
+                palette_sig.update({
+                    'palette_size': int(palette_stat.st_size),
+                    'palette_mtime_ns': int(getattr(palette_stat, 'st_mtime_ns', int(palette_stat.st_mtime * 1_000_000_000))),
+                })
+            transform_flags = {
+                'pillow_transparency_enabled': bool(self.config.pillow_transparency),
+                'png_transparency': bool(self.config.pillow_transparency and self._should_process_transparent_sprite(resolved_rel)),
+                'crop_top_half': bool(self.config.pillow_transparency and self._should_crop_top_half(resolved_rel)),
+                'palette_applied': bool(should_apply_palette),
+                'transform_version': 7,
+            }
+            sig = {'size': int(source_stat.st_size), 'mtime_ns': int(getattr(source_stat, 'st_mtime_ns', int(source_stat.st_mtime * 1_000_000_000))), **transform_flags, **palette_sig}
+            cache_key = f"{resolved_candidate}|{palette_rel or ''}"
+            target_exists = target.exists() and target.is_file()
+            if cache_key not in copied:
+                if target_exists and cache_entries.get(cache_key) == sig:
+                    skipped_count += 1
+                else:
+                    if self.config.pillow_transparency and rel_posix.endswith('.png') and (transform_flags['png_transparency'] or transform_flags['crop_top_half'] or transform_flags['palette_applied']):
+                        self._process_png_asset(resolved_candidate, resolved_rel, target, palette_source=palette_rel, apply_palette=should_apply_palette)
+                    else:
+                        shutil.copy2(resolved_candidate, target)
+                    copied_count += 1
+                    cache_entries[cache_key] = sig
+                copied.add(cache_key)
+            return f'../assets/game/{effective_rel.as_posix()}'
+
         species_values = list(self.model.species.values())
         for species in self.progress.iter(species_values, 'asset copy', every=max(1, len(species_values) // 100) if species_values else 1, detail=lambda s: getattr(s, 'name', getattr(s, 'species_id', ''))):
             copied_graphics = {}
             display_graphics = self._display_graphics_for_species(species)
             for key, source in display_graphics.items():
-                source_str = str(source).replace('\\', '/')
-                candidate = self.config.project_dir / source_str
-                if candidate.exists() and candidate.is_file():
-                    rel = Path(source_str)
-                    target = assets_root / rel
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    source_stat = candidate.stat()
-                    sig = {'size': int(source_stat.st_size), 'mtime_ns': int(getattr(source_stat, 'st_mtime_ns', int(source_stat.st_mtime * 1_000_000_000)))}
-                    cache_key = str(candidate)
-                    target_exists = target.exists() and target.is_file()
-                    if candidate not in copied:
-                        if target_exists and cache_entries.get(cache_key) == sig:
-                            skipped_count += 1
-                        else:
-                            shutil.copy2(candidate, target)
-                            copied_count += 1
-                            cache_entries[cache_key] = sig
-                        copied.add(candidate)
-                    copied_graphics[key] = f'../assets/game/{rel.as_posix()}'
-                else:
-                    copied_graphics[key] = source_str
+                palette_source = display_graphics.get('palette') if key == 'frontPic' else None
+                copied_graphics[key] = copy_source_path(source, palette_source=palette_source)
             species.graphics = copied_graphics
+
+        for trainer in self.model.trainers.values():
+            trainer.picture = copy_source_path(trainer.picture)
+            for mon in trainer.pokemon:
+                palette_source = None
+                if mon.species_id and mon.species_id in self.model.species:
+                    palette_source = self._display_graphics_for_species(self.model.species[mon.species_id]).get('palette')
+                mon.picture = copy_source_path(mon.picture, palette_source=palette_source)
+
         cache['files'] = cache_entries
         self._save_asset_cache(cache)
         self.progress.info(f'Asset copy complete: {copied_count} copied, {skipped_count} reused from cache')

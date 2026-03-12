@@ -12,6 +12,7 @@ from .parsers.moves import parse_moves
 from .parsers.sprites import parse_sprite_assets
 from .parsers.species import parse_species
 from .parsers.types import parse_species_to_national, parse_types
+from .parsers.trainers import parse_trainers
 from .c_utils import discover_project_defines
 from ..progress import ProgressReporter
 
@@ -28,7 +29,7 @@ class ExpansionProject:
             print(message)
 
     def load_all(self) -> dict:
-        progress = ProgressReporter(enabled=self.verbose, total_steps=11)
+        progress = ProgressReporter(enabled=self.verbose, total_steps=12)
         defines = discover_project_defines(str(self.project_dir))
         progress.step('Parsing types')
         types = parse_types(self.project_dir)
@@ -53,6 +54,8 @@ class ExpansionProject:
                 species[species_id]['graphics'] = graphics
         progress.step('Parsing encounters')
         encounters = parse_encounters(self.project_dir, generated_json=self.wild_encounters_path)
+        progress.step('Parsing trainers')
+        trainers = parse_trainers(self.project_dir, defines=defines)
         progress.step('Validating assets')
         validation = build_validation_report(self.project_dir, {'species': species})
         progress.info(f"Loaded {len(species)} species, {len(moves)} moves, {len(abilities)} abilities, and {len(encounters)} encounter areas")
@@ -67,6 +70,7 @@ class ExpansionProject:
             'form_species_tables': form_species_tables,
             'sprites': sprites,
             'encounters': encounters,
+            'trainers': trainers,
             'validation': validation,
             'sprite_diagnostics': sprite_diagnostics,
         }

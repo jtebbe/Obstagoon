@@ -17,6 +17,7 @@ def main() -> int:
     parser.add_argument("--wild-encounters-json", default=None, help="Path to generated wild encounter JSON")
     parser.add_argument("--verbose", action="store_true", help="Print progress")
     parser.add_argument("--cache-dir", default=None, help="Directory for persistent caches")
+    parser.add_argument("--pillow-transparency", action="store_true", help="Enable Pillow-based PNG transparency and anim_front/front_anim top-half cropping for graphics/pokemon/*.png assets")
     args = parser.parse_args()
 
     project_dir = Path(args.project_dir).resolve()
@@ -32,6 +33,7 @@ def main() -> int:
         verbose=args.verbose,
         wild_encounters_path=wild_encounters_path,
         cache_dir=cache_dir,
+        pillow_transparency=args.pillow_transparency,
     )
     build_site(config)
     return 0

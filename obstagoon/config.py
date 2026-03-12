@@ -14,6 +14,7 @@ class SiteConfig:
     verbose: bool = False
     wild_encounters_path: Path | None = None
     cache_dir: Path | None = None
+    pillow_transparency: bool = False
 
     def ensure(self) -> None:
         self.dist_dir.mkdir(parents=True, exist_ok=True)
