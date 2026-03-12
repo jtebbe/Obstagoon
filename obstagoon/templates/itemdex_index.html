@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% set request_depth = 1 %}
+{% block title %}Itemdex - {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Itemdex</h1>
+<div class="filter-bar">
+  <label class="filter-label" for="itemdex-search">Search Items</label>
+  <input id="itemdex-search" class="filter-input" type="search" placeholder="Filter by item, location, or source" data-filter-input data-filter-target="#itemdex-table tbody tr" data-filter-empty="#itemdex-empty">
+</div>
+<table id="itemdex-table">
+  <thead><tr><th>Name</th><th>Location</th><th>Source</th></tr></thead>
+  <tbody>
+  {% for item in items %}
+    <tr data-search-text="{{ item.search_name }} {{ item.location }} {{ item.search_source }} {{ item.item_id }}">
+      <td>{{ item.name }}</td>
+      <td>{{ item.location }}</td>
+      <td>{{ item.source }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p id="itemdex-empty" class="filter-empty" style="display:none;">No items match that search.</p>
+{% endblock %}

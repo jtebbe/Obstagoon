@@ -65,12 +65,19 @@ class AbilityRecord:
 
 
 @dataclass(slots=True)
+class ItemLocation:
+    location: str
+    source: str
+
+
+@dataclass(slots=True)
 class ItemRecord:
     item_id: str
     name: str
     description: str | None = None
     pocket: str | None = None
     price: str | None = None
+    locations: list[ItemLocation] = field(default_factory=list)
 
 
 @dataclass(slots=True)

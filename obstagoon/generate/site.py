@@ -64,7 +64,7 @@ class SiteGenerator:
         }
 
     def run(self) -> None:
-        self.progress = ProgressReporter(enabled=self.config.verbose, total_steps=14 if self.config.copy_assets else 13)
+        self.progress = ProgressReporter(enabled=self.config.verbose, total_steps=15 if self.config.copy_assets else 14)
         self.progress.step('Preparing output directories')
         self._prepare_dirs()
         self.progress.step('Writing CSS')
@@ -93,12 +93,14 @@ class SiteGenerator:
         self._render_forms()
         self.progress.step('Rendering encounters')
         self._render_encounters()
+        self.progress.step('Rendering itemdex')
+        self._render_itemdex()
         self.progress.step('Rendering trainerdex')
         self._render_trainerdex()
         self.progress.info('Build complete')
 
     def _prepare_dirs(self) -> None:
-        for rel in ['pokedex', 'moves', 'abilities', 'types', 'forms', 'encounters', 'trainerdex', 'assets', 'assets/generated/types']:
+        for rel in ['pokedex', 'moves', 'abilities', 'types', 'forms', 'encounters', 'itemdex', 'trainerdex', 'assets', 'assets/generated/types']:
             (self.config.dist_dir / rel).mkdir(parents=True, exist_ok=True)
 
     def _ctx(self, **extra):
@@ -266,6 +268,30 @@ class SiteGenerator:
 
     def _render_encounters(self) -> None:
         self._render('encounters.html', 'encounters/index.html', encounters=self.model.encounters)
+
+
+    def _render_itemdex(self) -> None:
+        source_order = {'Shop': 0, 'NPC Event or Dialogue': 1, 'Overworld': 2, 'Hidden Item': 3}
+        rows = []
+        for item in sorted(self.model.items.values(), key=lambda i: i.name):
+            if not item.locations:
+                continue
+            ordered_locations = sorted(
+                item.locations,
+                key=lambda loc: (source_order.get(loc.source, 999), loc.location),
+            )
+            previous_source = None
+            for index, loc in enumerate(ordered_locations):
+                rows.append({
+                    'name': item.name if index == 0 else '',
+                    'location': loc.location,
+                    'source': loc.source if loc.source != previous_source else '',
+                    'item_id': item.item_id,
+                    'search_name': item.name,
+                    'search_source': loc.source,
+                })
+                previous_source = loc.source
+        self._render('itemdex_index.html', 'itemdex/index.html', items=rows)
 
     def _render_trainerdex(self) -> None:
         trainers = sorted(self.model.trainers.values(), key=lambda t: t.name)
