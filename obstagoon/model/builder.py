@@ -6,7 +6,9 @@ from .schema import AbilityRecord, EncounterArea, EncounterSlot, Evolution, Item
 from ..normalize import evolution_label, fix_mojibake, format_encounter_method, humanize_stat_key, humanize_symbol, infer_form_name, normalize_move_category, normalize_move_metric, pretty_source_label, slug_from_symbol, unique_preserve_order
 
 
-PLACEHOLDER_SPECIES = {'SPECIES_NONE'}
+PLACEHOLDER_SPECIES = {'SPECIES_NONE', 'SPECIES_EGG'}
+PLACEHOLDER_MOVES = {'MOVE_NONE'}
+PLACEHOLDER_ABILITIES = {'ABILITY_NONE'}
 STAT_DISPLAY_ORDER = {'HP': 0, 'Atk': 1, 'Def': 2, 'SpA': 3, 'SpD': 4, 'Spe': 5}
 
 
@@ -282,8 +284,30 @@ def build_model(project) -> ObstagoonModel:
     _fallback_egg_moves(species_records)
     national_to_species = _choose_representative_species_by_dex(species_records)
 
-    moves = {move_id: MoveRecord(move_id=move_id, name=fix_mojibake(entry.get('name')) or humanize_symbol(move_id) or slug_from_symbol(move_id).replace('-', ' ').title(), description=fix_mojibake(entry.get('description')), type=humanize_symbol(entry.get('type')), power=normalize_move_metric(entry.get('power')), accuracy=normalize_move_metric(entry.get('accuracy')), pp=entry.get('pp'), category=normalize_move_category(entry.get('category')), flags=[humanize_symbol(flag) or flag for flag in entry.get('flags', [])]) for move_id, entry in raw['moves'].items()}
-    abilities = {ability_id: AbilityRecord(ability_id=ability_id, name=fix_mojibake(entry.get('name')) or humanize_symbol(ability_id) or slug_from_symbol(ability_id).replace('-', ' ').title(), description=fix_mojibake(entry.get('description'))) for ability_id, entry in raw['abilities'].items()}
+    moves = {
+        move_id: MoveRecord(
+            move_id=move_id,
+            name=fix_mojibake(entry.get('name')) or humanize_symbol(move_id) or slug_from_symbol(move_id).replace('-', ' ').title(),
+            description=fix_mojibake(entry.get('description')),
+            type=humanize_symbol(entry.get('type')),
+            power=normalize_move_metric(entry.get('power')),
+            accuracy=normalize_move_metric(entry.get('accuracy')),
+            pp=entry.get('pp'),
+            category=normalize_move_category(entry.get('category')),
+            flags=[humanize_symbol(flag) or flag for flag in entry.get('flags', [])],
+        )
+        for move_id, entry in raw['moves'].items()
+        if move_id not in PLACEHOLDER_MOVES
+    }
+    abilities = {
+        ability_id: AbilityRecord(
+            ability_id=ability_id,
+            name=fix_mojibake(entry.get('name')) or humanize_symbol(ability_id) or slug_from_symbol(ability_id).replace('-', ' ').title(),
+            description=fix_mojibake(entry.get('description')),
+        )
+        for ability_id, entry in raw['abilities'].items()
+        if ability_id not in PLACEHOLDER_ABILITIES
+    }
     items = {
         item_id: ItemRecord(
             item_id=item_id,
@@ -297,9 +321,10 @@ def build_model(project) -> ObstagoonModel:
     }
     encounter_areas = [EncounterArea(map_name=area.get('map'), display_name=fix_mojibake(area.get('display_name')) or slug_from_symbol(area.get('map', 'MAP_UNKNOWN')).replace('-', ' ').title(), encounters={format_encounter_method(method) or method: [EncounterSlot(species=humanize_symbol(slot.get('species')) or slot.get('species'), min_level=slot.get('min_level'), max_level=slot.get('max_level'), rate=slot.get('rate'), method=format_encounter_method(slot.get('method')) or slot.get('method')) for slot in slots] for method, slots in area.get('encounters', {}).items()}) for area in raw['encounters']]
     trainers = _build_trainers(raw.get('trainers', []), species_records)
+    base_species_count = sum(1 for species_id, rec in species_records.items() if species_id not in PLACEHOLDER_SPECIES and not rec.base_species)
     metadata = {
         'project_kind': 'pokeemerald-expansion',
-        'species_count': len(species_records),
+        'species_count': base_species_count,
         'move_count': len(moves),
         'ability_count': len(abilities),
         'item_count': len(items),
