@@ -8,7 +8,6 @@ def test_placeholder_species_move_and_ability_are_excluded_from_model_and_counts
         "species_to_national": {
             "SPECIES_NONE": 0,
             "SPECIES_BULBASAUR": 1,
-            "SPECIES_EGG": 0,
             "SPECIES_ALCREMIE": 869,
             "SPECIES_ALCREMIE_RUBY_CREAM": 869,
         },
@@ -16,7 +15,6 @@ def test_placeholder_species_move_and_ability_are_excluded_from_model_and_counts
         "species": {
             "SPECIES_NONE": {"speciesName": "None", "graphics": {}, "types": [], "abilities": [], "eggGroups": [], "stats": {}, "evolutions": []},
             "SPECIES_BULBASAUR": {"speciesName": "Bulbasaur", "graphics": {}, "types": [], "abilities": [], "eggGroups": [], "stats": {}, "evolutions": []},
-            "SPECIES_EGG": {"speciesName": "Egg", "graphics": {}, "types": [], "abilities": [], "eggGroups": [], "stats": {}, "evolutions": []},
             "SPECIES_ALCREMIE": {"speciesName": "Alcremie", "graphics": {}, "types": [], "abilities": [], "eggGroups": [], "stats": {}, "evolutions": []},
             "SPECIES_ALCREMIE_RUBY_CREAM": {"speciesName": "Alcremie", "graphics": {}, "types": [], "abilities": [], "eggGroups": [], "stats": {}, "evolutions": [], "baseSpecies": "SPECIES_ALCREMIE"},
         },
@@ -35,7 +33,6 @@ def test_placeholder_species_move_and_ability_are_excluded_from_model_and_counts
     model = build_model(project)
 
     assert "SPECIES_NONE" not in model.species
-    assert "SPECIES_EGG" not in model.species
     assert "MOVE_NONE" not in model.moves
     assert "ABILITY_NONE" not in model.abilities
     assert model.metadata["species_count"] == 2

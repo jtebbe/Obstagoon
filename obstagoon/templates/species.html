@@ -28,7 +28,7 @@
     <img src="{{ display_graphics.frontPic }}" alt="{{ species.name }} front sprite" class="pokemon-hero-sprite">
     <div>
       <p class="muted">{{ humanize_symbol(species.species_id) or species.species_id }}</p>
-      <p><strong>National Dex #:</strong> {{ species.national_dex if species.national_dex is not none else '—' }}</p>
+      <p><strong>{{ dex_label|default('National Dex #') }}:</strong> {{ active_dex_number if active_dex_number is not none else (species.national_dex if species.national_dex is not none else '—') }}</p>
     </div>
   </div>
 </section>

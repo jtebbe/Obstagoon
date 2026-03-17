@@ -10,7 +10,7 @@ from .generate.site import SiteGenerator
 
 def build_site(config: SiteConfig) -> None:
     config.ensure()
-    project = ExpansionProject(config.project_dir, verbose=config.verbose, wild_encounters_path=config.wild_encounters_path, cache_dir=config.cache_dir)
+    project = ExpansionProject(config.project_dir, verbose=config.verbose, wild_encounters_path=config.wild_encounters_path, cache_dir=config.cache_dir, hoenn_dex=config.hoenn_dex)
     model = build_model(project)
     env = Environment(
         loader=FileSystemLoader(str((__import__(__name__.split('.')[0]).__path__[0])) + "/templates"),

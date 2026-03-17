@@ -224,7 +224,7 @@ class SiteGenerator:
 
     def _render_pokedex(self) -> None:
         dex_entries = sorted(self._rep_species_by_dex.items(), key=lambda x: x[0])
-        self._render('pokedex_index.html', 'pokedex/index.html', dex_entries=dex_entries, display_graphics=self._display_graphics_for_species)
+        self._render('pokedex_index.html', 'pokedex/index.html', dex_entries=dex_entries, dex_label=self.model.metadata.get('dex_label', 'National Dex #'), display_graphics=self._display_graphics_for_species)
 
     def _species_slug_path(self, species: SpeciesRecord) -> str:
         return f'pokedex/{slug_from_symbol(species.species_id)}.html'
@@ -233,11 +233,12 @@ class SiteGenerator:
         return f'trainerdex/{slug_from_symbol(trainer.trainer_id)}.html'
 
     def _render_species_pages(self) -> None:
-        species_values = sorted(self.model.species.values(), key=lambda s: (s.national_dex is None, s.national_dex or 99999, s.base_species is not None, s.form_index or 0, s.name))
+        active_dex_map = self.model.metadata.get('active_dex_map', {})
+        species_values = sorted(self.model.species.values(), key=lambda s: (active_dex_map.get(s.species_id) is None, active_dex_map.get(s.species_id) or s.national_dex or 99999, s.base_species is not None, s.form_index or 0, s.name))
         for species in self.progress.iter(species_values, 'species pages', every=25, detail=lambda s: s.name):
-            self._render('species.html', self._species_slug_path(species), species=species, display_graphics=self._display_graphics_for_species(species), encounter_locations=self._encounters_for_species(species))
+            self._render('species.html', self._species_slug_path(species), species=species, display_graphics=self._display_graphics_for_species(species), encounter_locations=self._encounters_for_species(species), dex_label=self.model.metadata.get('dex_label', 'National Dex #'), active_dex_number=self.model.metadata.get('active_dex_map', {}).get(species.species_id))
         for dex, species in self.progress.iter(sorted(self._rep_species_by_dex.items()), 'dex pages', every=25, detail=lambda item: item[1].name):
-            self._render('species.html', f'pokedex/{dex}.html', species=species, display_graphics=self._display_graphics_for_species(species), encounter_locations=self._encounters_for_species(species))
+            self._render('species.html', f'pokedex/{dex}.html', species=species, display_graphics=self._display_graphics_for_species(species), encounter_locations=self._encounters_for_species(species), dex_label=self.model.metadata.get('dex_label', 'National Dex #'), active_dex_number=dex)
 
     def _render_moves(self) -> None:
         moves = sorted(self.model.moves.values(), key=lambda m: m.name)

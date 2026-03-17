@@ -8,7 +8,7 @@
   <input id="pokedex-search" class="filter-input" type="search" placeholder="Filter by name, type, ability, or dex number" data-filter-input data-filter-target="#pokedex-table tbody tr" data-filter-empty="#pokedex-empty">
 </div>
 <table id="pokedex-table">
-  <thead><tr><th>National Dex #</th><th>Sprite</th><th>Name</th><th>Types</th><th>Abilities</th></tr></thead>
+  <thead><tr><th>{{ dex_label }}</th><th>Sprite</th><th>Name</th><th>Types</th><th>Abilities</th></tr></thead>
   <tbody>
   {% for number, species in dex_entries %}
     <tr data-search-text="{{ number }} {{ species.name }} {{ species.types|join(' ') }} {{ species.abilities|join(' ') }}">

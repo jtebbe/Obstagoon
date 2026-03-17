@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..c_utils import find_first_existing, flatten_local_includes, parse_numeric_constants, parse_named_initializers, read_text, strip_comments, find_matching
+from ..c_utils import find_first_existing, flatten_local_includes, parse_numeric_constants, parse_named_initializers, read_text, strip_comments, find_matching, preprocess_conditionals, split_top_level_csv
 from .species import _expand_species_function_macros
 
 
@@ -54,3 +54,31 @@ def parse_species_to_national(project_dir: Path) -> dict[str, int | None]:
         dex_match = re.search(r'\.natDexNum\s*=\s*([A-Z0-9_]+)', block)
         result[species] = dex_map.get(dex_match.group(1)) if dex_match else None
     return result
+
+
+def _parse_enum_symbol_order(text: str, enum_name: str, prefix: str) -> list[str]:
+    m = re.search(rf'enum\s+{re.escape(enum_name)}\s*\{{', text)
+    if not m:
+        return []
+    brace = text.find('{', m.start())
+    end = find_matching(text, brace)
+    block = text[brace + 1:end]
+    result: list[str] = []
+    for part in split_top_level_csv(block):
+        token = part.strip()
+        if not token:
+            continue
+        token = re.sub(r'=.*$', '', token).strip()
+        if token.startswith(prefix):
+            result.append('SPECIES_' + token[len(prefix):])
+    return result
+
+
+def parse_hoenn_dex_order(project_dir: Path, defines: dict[str, int] | None = None) -> list[str]:
+    path = project_dir / 'include/constants/pokedex.h'
+    if not path.exists():
+        return []
+    roots = [project_dir / 'include/constants', project_dir / 'include/config', project_dir / 'include', project_dir]
+    text = _expand_species_function_macros(strip_comments(flatten_local_includes(path, roots=roots)))
+    text = preprocess_conditionals(text, defines=defines)
+    return _parse_enum_symbol_order(text, 'HoennDexOrder', 'HOENN_DEX_')

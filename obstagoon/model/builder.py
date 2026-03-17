@@ -158,6 +158,30 @@ def _species_sort_key(rec: SpeciesRecord) -> tuple[int, int, str]:
     )
 
 
+def _resolve_requested_dex_species_id(requested_species_id: str, species_records: dict[str, SpeciesRecord]) -> str | None:
+    if requested_species_id in species_records:
+        return requested_species_id
+
+    normal_alias = f"{requested_species_id}_NORMAL"
+    if normal_alias in species_records:
+        return normal_alias
+
+    requested_name = humanize_symbol(requested_species_id) or slug_from_symbol(requested_species_id).replace('-', ' ').title()
+    requested_name = fix_mojibake(requested_name or '').strip().lower()
+    candidates = [rec for rec in species_records.values() if fix_mojibake(rec.name or '').strip().lower() == requested_name]
+    if not candidates:
+        return None
+
+    preferred_form_names = {'normal', 'ordinary', 'base', 'standard', 'average'}
+    candidates.sort(key=lambda rec: (
+        0 if not rec.base_species else 1,
+        0 if (fix_mojibake(rec.form_name or '').strip().lower() in preferred_form_names or rec.form_index == 0) else 1,
+        rec.form_index if rec.form_index is not None else 9999,
+        rec.species_id,
+    ))
+    return candidates[0].species_id
+
+
 def _choose_representative_species_by_dex(species_records: dict[str, SpeciesRecord]) -> dict[int, str]:
     by_dex: dict[int, list[SpeciesRecord]] = defaultdict(list)
     for rec in species_records.values():
@@ -202,6 +226,7 @@ def _fallback_egg_moves(species_records: dict[str, SpeciesRecord]) -> None:
 
 def build_model(project) -> ObstagoonModel:
     raw = project.load_all()
+    hoenn_mode = bool(getattr(project, 'hoenn_dex', False) or (bool(getattr(project, 'config', None).hoenn_dex) if getattr(project, 'config', None) is not None else False))
     species_to_national = raw['species_to_national']
     form_tables = raw.get('form_species_tables', {})
     base_by_species: dict[str, str] = {}
@@ -282,7 +307,32 @@ def build_model(project) -> ObstagoonModel:
             species_records[rec.base_species].forms = list(dict.fromkeys(species_records[rec.base_species].forms + siblings))
 
     _fallback_egg_moves(species_records)
-    national_to_species = _choose_representative_species_by_dex(species_records)
+
+    dex_label = 'National Dex #'
+    dex_mode = 'national'
+    raw_hoenn_order = []
+    for sid in raw.get('hoenn_dex_order', []):
+        resolved_sid = _resolve_requested_dex_species_id(sid, species_records)
+        if resolved_sid:
+            raw_hoenn_order.append(resolved_sid)
+    hoenn_order: list[str] = []
+    for sid in raw_hoenn_order:
+        rec = species_records[sid]
+        if rec.base_species:
+            continue
+        if sid not in hoenn_order:
+            hoenn_order.append(sid)
+    if hoenn_mode and hoenn_order:
+        allowed = set(hoenn_order)
+        allowed.update({sid for sid, rec in species_records.items() if rec.base_species in allowed})
+        species_records = {sid: rec for sid, rec in species_records.items() if sid in allowed}
+        sprites = [sprite for sprite in sprites if sprite.species_id in species_records]
+        forms_for_base = {base: [sid for sid in children if sid in species_records] for base, children in forms_for_base.items() if base in species_records}
+        national_to_species = {idx: sid for idx, sid in enumerate(hoenn_order, start=1)}
+        dex_label = 'Hoenn Dex #'
+        dex_mode = 'hoenn'
+    else:
+        national_to_species = _choose_representative_species_by_dex(species_records)
 
     moves = {
         move_id: MoveRecord(
@@ -332,5 +382,13 @@ def build_model(project) -> ObstagoonModel:
         'representative_species_by_dex': national_to_species,
         'sprite_diagnostics': raw.get('sprite_diagnostics', {}),
         'trainer_count': len(trainers),
+        'dex_label': dex_label,
+        'dex_mode': dex_mode,
+        'active_dex_map': {
+            sid: dex
+            for dex, species_id in national_to_species.items()
+            for sid in [species_id, *forms_for_base.get(species_id, [])]
+            if sid in species_records
+        },
     }
     return ObstagoonModel(species=species_records, moves=moves, abilities=abilities, items=items, types={k: humanize_symbol(v) or v for k, v in raw['types'].items()}, encounters=encounter_areas, sprites=sprites, species_to_national=species_to_national, national_to_species=national_to_species, forms=dict(forms_for_base), trainers=trainers, metadata=metadata)
