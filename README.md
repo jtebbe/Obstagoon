@@ -2,6 +2,8 @@
 
 Obstagoon is a static documentation generator for **`pokeemerald-expansion`** and related modern Pokémon decompilation forks.
 
+For the wonderful Linoone documentation generator that works with pokeemerald and not pokeemerald-expansion, please find it here courtesy of huderlem: https://github.com/huderlem/linoone
+
 It is intentionally **not** a direct Linoone fork in architecture. Instead, it is a new backend-first system built around the expansion data model:
 
 - `gSpeciesInfo`
