@@ -1,5 +1,8 @@
 # Obstagoon
 
+
+**For the wonderful Linoone documentation generator that works with pokeemerald and not pokeemerald-expansion, please find it here courtesy of huderlem: https://github.com/huderlem/linoone**
+
 Obstagoon is a static documentation generator for **`pokeemerald-expansion`** and related modern Pokémon decompilation forks.
 
 It is intentionally **not** a direct Linoone fork in architecture. Instead, it is a new backend-first system built around the expansion data model:
@@ -179,3 +182,21 @@ Supported parsing behavior includes:
 - symbolic config defines like `#define P_UPDATED_ABILITIES GEN_9`
 
 This means Pokémon, move, and ability data shown by the site should track the active expansion configuration much more closely.
+
+
+## Hoenn Dex Mode (`--hoenn-dex`)
+
+- Limits parsing strictly to the Hoenn Pokédex (Treecko → Deoxys)
+- Uses `enum HoennDexOrder` from `include/constants/pokedex.h`
+- Skips all non-Hoenn species entirely (not parsed, not rendered)
+- Respects conditional flags (e.g. `P_NEW_EVOS_IN_REGIONAL_DEX`)
+- Alternate forms share the same Hoenn dex number as their base species
+
+## Species Inclusion (`species_enabled.h`)
+
+Obstagoon respects:
+
+`include/config/species_enabled.h`
+
+- If a family (e.g. `P_FAMILY_BULBASAUR`) is `FALSE`, all species in that family are excluded
+- Disabled species are not parsed, counted, or rendered
