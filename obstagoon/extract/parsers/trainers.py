@@ -16,7 +16,7 @@ POKEMON_HEADER_RE = re.compile(
 )
 
 KNOWN_TRAINER_FIELDS = {
-    'Name', 'Pic', 'Class', 'Gender', 'Music', 'Items', 'Battle Type', 'AI',
+    'Name', 'Pic', 'Class', 'Gender', 'Music', 'Items', 'Battle Type', 'Double Battle', 'AI',
     'Mugshot', 'Starting Status', 'Party Pool', 'Party Size', 'Pool', 'Pool Size', 'Pool Rules',
 }
 
@@ -74,6 +74,21 @@ def _parse_trainer_metadata(lines: list[str]) -> dict[str, str]:
         result[key] = m.group(2).strip()
     return result
 
+
+
+
+def _resolve_battle_type(metadata: dict[str, str]) -> str | None:
+    explicit = metadata.get('Battle Type')
+    if explicit:
+        return explicit.strip() or None
+    double_battle = metadata.get('Double Battle')
+    if double_battle:
+        lowered = double_battle.strip().lower()
+        if lowered == 'yes':
+            return 'Doubles'
+        if lowered == 'no':
+            return 'Singles'
+    return None
 
 def _parse_stat_block(value: str) -> dict[str, str]:
     result: dict[str, str] = {}
@@ -233,6 +248,7 @@ def parse_trainers(project_dir: Path, defines: dict[str, int] | None = None) -> 
             'class_name': title_case_words(metadata.get('Class')),
             'pic_path': resolve_trainer_picture_path(metadata.get('Pic'), picture_index),
             'location': location_index.get(trainer_id),
+            'battle_type': _resolve_battle_type(metadata),
             'has_party_pool': has_party_pool,
             'party_size': party_size_value,
             'pool_rules': title_case_words(metadata.get('Pool Rules')) or metadata.get('Pool Rules'),

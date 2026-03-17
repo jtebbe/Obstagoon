@@ -456,3 +456,77 @@ def test_trainer_party_resolves_species_names_with_apostrophes() -> None:
     trainer = model.trainers['TRAINER_TEST']
     assert trainer.pokemon[0].species_id == 'SPECIES_SIRFETCHD'
     assert trainer.pokemon[0].picture == 'graphics/pokemon/sirfetchd/front.png'
+
+
+def test_parse_trainers_resolves_battle_type_old_and_new_formats(tmp_path: Path) -> None:
+    project = tmp_path / 'project'
+    (project / 'src/data').mkdir(parents=True)
+    (project / 'graphics/trainers/front_pics').mkdir(parents=True)
+    (project / 'data/maps/Route123').mkdir(parents=True)
+
+    (project / 'graphics/trainers/front_pics/jacki.png').write_text('x')
+    (project / 'graphics/trainers/front_pics/jacki2.png').write_text('x')
+    (project / 'data/maps/Route123/scripts.inc').write_text('trainerbattle_single TRAINER_JACKI_1, Text, Text\ntrainerbattle_single TRAINER_JACKI_2, Text, Text')
+    (project / 'src/data/trainers.party').write_text(
+        '=== TRAINER_JACKI_1 ===\n'
+        'Name: JACKI\n'
+        'Class: Psychic\n'
+        'Pic: jacki\n'
+        'Gender: Female\n'
+        'Music: Intense\n'
+        'Battle Type: Doubles\n\n'
+        'Abra\n'
+        'Level: 12\n\n'
+        '=== TRAINER_JACKI_2 ===\n'
+        'Name: JACKI\n'
+        'Class: Psychic\n'
+        'Pic: jacki2\n'
+        'Gender: Female\n'
+        'Music: Intense\n'
+        'Double Battle: No\n'
+        'AI: Check Bad Move\n\n'
+        'Kadabra\n'
+        'Level: 24\n',
+        encoding='utf-8',
+    )
+
+    trainers = parse_trainers(project)
+    assert trainers[0]['battle_type'] == 'Doubles'
+    assert trainers[1]['battle_type'] == 'Singles'
+
+
+def test_trainer_page_renders_battle_type(tmp_path: Path) -> None:
+    payload = {
+        'species': {},
+        'moves': {},
+        'abilities': {},
+        'items': {},
+        'types': {},
+        'encounters': [],
+        'sprites': [],
+        'species_to_national': {},
+        'national_to_species': {},
+        'forms': {},
+        'trainers': [{
+            'trainer_id': 'TRAINER_JACKI',
+            'name': 'Jacki',
+            'pic_path': 'graphics/trainers/front_pics/jacki.png',
+            'location': 'Route123',
+            'battle_type': 'Doubles',
+            'pokemon': [],
+        }],
+        'validation': {},
+        'sprite_diagnostics': {},
+    }
+    model = build_model(DummyProject(payload))
+    project_dir = tmp_path / 'project'
+    dist = tmp_path / 'dist'
+    (project_dir / 'graphics/trainers/front_pics').mkdir(parents=True)
+    (project_dir / 'graphics/trainers/front_pics/jacki.png').write_text('x')
+    config = SiteConfig(project_dir=project_dir, dist_dir=dist, site_title='Test', copy_assets=False, verbose=False)
+    env = Environment(loader=FileSystemLoader(str((__import__('obstagoon').__path__[0])) + '/templates'), autoescape=select_autoescape(['html', 'xml']), trim_blocks=True, lstrip_blocks=True)
+    SiteGenerator(config=config, model=model, env=env).run()
+
+    trainer_page = (dist / 'trainerdex/trainer-jacki.html').read_text(encoding='utf-8')
+    assert 'Battle Type:' in trainer_page
+    assert 'Doubles' in trainer_page

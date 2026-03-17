@@ -126,6 +126,7 @@ class TrainerRecord:
     name: str
     picture: str | None = None
     location: str | None = None
+    battle_type: str | None = None
     has_party_pool: bool = False
     party_size: str | None = None
     pool_rules: str | None = None

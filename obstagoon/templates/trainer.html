@@ -10,6 +10,7 @@
     {% endif %}
     <div>
       <p><strong>Location:</strong> {{ trainer.location or '—' }}</p>
+      {% if trainer.battle_type %}<p><strong>Battle Type:</strong> {{ trainer.battle_type }}</p>{% endif %}
       {% if trainer.party_size %}<p><strong>Party Size:</strong> {{ trainer.party_size }}</p>{% endif %}
       {% if trainer.pool_rules %}<p><strong>Pool Rules:</strong> {{ trainer.pool_rules }}</p>{% endif %}
       {% if trainer.class_name %}<p><strong>Class:</strong> {{ trainer.class_name }}</p>{% endif %}

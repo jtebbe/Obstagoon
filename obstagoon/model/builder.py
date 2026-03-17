@@ -140,6 +140,7 @@ def _build_trainers(raw_trainers: list[dict], species_records: dict[str, Species
             name=_display_trainer_name(trainer),
             picture=trainer.get('pic_path'),
             location=trainer.get('location'),
+            battle_type=trainer.get('battle_type'),
             has_party_pool=bool(trainer.get('has_party_pool')),
             party_size=trainer.get('party_size'),
             pool_rules=trainer.get('pool_rules') or (trainer.get('raw_metadata') or {}).get('Pool Rules'),
