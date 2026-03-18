@@ -6,17 +6,21 @@ from .config import SiteConfig
 from .extract.expansion_project import ExpansionProject
 from .model.builder import build_model
 from .generate.site import SiteGenerator
+from .generate.showdown import generate_showdown_export
 
 
 def build_site(config: SiteConfig) -> None:
     config.ensure()
     project = ExpansionProject(config.project_dir, verbose=config.verbose, wild_encounters_path=config.wild_encounters_path, cache_dir=config.cache_dir, hoenn_dex=config.hoenn_dex)
     model = build_model(project)
-    env = Environment(
-        loader=FileSystemLoader(str((__import__(__name__.split('.')[0]).__path__[0])) + "/templates"),
-        autoescape=select_autoescape(["html", "xml"]),
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
-    generator = SiteGenerator(config=config, model=model, env=env)
-    generator.run()
+    if config.documentation or not config.showdown_export:
+        env = Environment(
+            loader=FileSystemLoader(str((__import__(__name__.split('.')[0]).__path__[0])) + "/templates"),
+            autoescape=select_autoescape(["html", "xml"]),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        generator = SiteGenerator(config=config, model=model, env=env)
+        generator.run()
+    if config.showdown_export:
+        generate_showdown_export(config=config, model=model)

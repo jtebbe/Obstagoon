@@ -18,7 +18,7 @@ from ..c_utils import (
     strip_comments,
 )
 
-STAT_FIELDS = ['baseHP', 'baseAttack', 'baseDefense', 'baseSpeed', 'baseSpAttack', 'baseSpDefense']
+STAT_FIELDS = ['baseHP', 'baseAttack', 'baseDefense', 'baseSpeed', 'baseSpAttack', 'baseSpDefense', 'height', 'weight']
 GRAPHIC_FIELDS = ['frontPic', 'frontPicFemale', 'backPic', 'backPicFemale', 'palette', 'paletteFemale', 'shinyPalette', 'shinyPaletteFemale', 'iconSprite', 'iconSpriteFemale', 'iconPalIndex', 'iconPalIndexFemale']
 
 
@@ -431,6 +431,41 @@ def _parse_species_text(text: str, species_to_national: dict[str, int | None], l
     return result
 
 
+
+
+def _parse_form_change_tables(project_dir: Path, defines: dict[str, int] | None = None) -> dict[str, list[dict[str, str | None]]]:
+    path = project_dir / 'src/data/pokemon/form_change_tables.h'
+    if not path.exists():
+        return {}
+    roots = project_include_roots(project_dir)
+    text = read_project_text(path, roots=roots, defines=defines)
+    result: dict[str, list[dict[str, str | None]]] = {}
+    pattern = re.compile(r'static\s+const\s+struct\s+FormChange\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[\]\s*=\s*\{', re.S)
+    for match in pattern.finditer(text):
+        name = match.group(1)
+        brace = text.find('{', match.end() - 1)
+        if brace == -1:
+            continue
+        end = find_matching(text, brace)
+        if end == -1:
+            continue
+        block = text[brace + 1:end]
+        changes: list[dict[str, str | None]] = []
+        for entry_match in re.finditer(r'\{([^{}]+)\}', block, re.S):
+            inner = entry_match.group(1).strip()
+            if not inner or 'FORM_CHANGE_TERMINATOR' in inner:
+                continue
+            parts = [(_resolve_scalar_token(part.strip(), defines) or part.strip()) for part in split_top_level_csv(inner)]
+            if not parts:
+                continue
+            method = parts[0]
+            target_species = parts[1] if len(parts) > 1 else None
+            item = parts[2] if len(parts) > 2 else None
+            changes.append({'method': method, 'target_species': target_species, 'item': item})
+        if changes:
+            result[name] = changes
+    return result
+
 def parse_species(project_dir: Path, species_to_national: dict[str, int | None], learnsets: dict[str, dict], defines: dict[str, int] | None = None) -> dict[str, dict]:
     species_path = project_dir / 'src/data/pokemon/species_info.h'
     if not species_path.exists():
@@ -444,10 +479,18 @@ def parse_species(project_dir: Path, species_to_national: dict[str, int | None],
         text = cfg_text + "\n" + text
 
     result = _parse_species_text(text, species_to_national, learnsets, defines=defines)
+    form_change_tables = _parse_form_change_tables(project_dir, defines=defines)
     if result:
+        for entry in result.values():
+            table = entry.get('formChangeTable')
+            entry['formChanges'] = form_change_tables.get(table, [])
         return result
     raw_text = strip_comments(flatten_local_includes(species_path, roots=roots))
     if cfg_path.exists():
         cfg_text = strip_comments(preprocess_conditionals(read_text(cfg_path), defines))
         raw_text = cfg_text + "\n" + raw_text
-    return _parse_species_text(raw_text, species_to_national, learnsets, defines=defines)
+    result = _parse_species_text(raw_text, species_to_national, learnsets, defines=defines)
+    for entry in result.values():
+        table = entry.get('formChangeTable')
+        entry['formChanges'] = form_change_tables.get(table, [])
+    return result

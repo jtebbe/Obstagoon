@@ -29,6 +29,7 @@ class SpeciesRecord:
     description: str | None = None
     types: list[str] = field(default_factory=list)
     abilities: list[str] = field(default_factory=list)
+    ability_slots: list[str | None] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
     catch_rate: str | None = None
     exp_yield: str | None = None
@@ -42,6 +43,7 @@ class SpeciesRecord:
     base_species: str | None = None
     form_name: str | None = None
     form_index: int | None = None
+    form_changes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

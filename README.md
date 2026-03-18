@@ -200,3 +200,148 @@ Obstagoon respects:
 
 - If a family (e.g. `P_FAMILY_BULBASAUR`) is `FALSE`, all species in that family are excluded
 - Disabled species are not parsed, counted, or rendered
+
+
+## Pokémon Showdown export (`--showdown-export`)
+
+Obstagoon can now generate a **Pokémon Showdown fork payload** after the normal site build.
+This export is aimed at a **custom teambuilder / validator workflow** for `pokeemerald-expansion`-based projects.
+
+### What it generates
+
+When `--showdown-export` is enabled, Obstagoon writes a generated export tree to:
+
+Pass `--showdown-canonical-pokedex /path/to/pokedex.ts` to preserve upstream Showdown canonical keys, names, `forme`, `otherFormes`, and `formeOrder` for unchanged species/forms instead of reconstructing them from ROM labels.
+
+- `./dist/showdown-export` by default (or `<your --dist-dir>/showdown-export` when `--dist-dir` is used), or
+- the path provided with `--showdown-export-dir`
+
+The export contains two payloads:
+
+- `server/` — a generated Showdown mod payload
+- `client/` — generated client-fork helpers and copied teambuilder assets
+
+Example layout:
+
+```text
+dist/showdown-export/
+  README.md
+  manifest.json
+  server/
+    README.md
+    data/mods/obstagoon/
+      scripts.ts
+      pokedex.ts
+      learnsets.ts
+      moves.ts
+      abilities.ts
+      items.ts
+      formats-data.ts
+      aliases.ts
+    aliases.obstagoon.generated.ts
+    config/
+      formats.obstagoon.generated.ts
+  client/
+    README.md
+    build-tools/
+      build-indexes.obstagoon.js
+    assets/
+      pokemon/
+      icons/
+      manifest.json
+```
+
+### Usage
+
+```bash
+python -m obstagoon /path/to/project \
+  --title "My Hack Dex" \
+  --showdown-export
+```
+
+By default, Obstagoon prints a clearly marked verbose message with the resolved Showdown export path when `--verbose` is enabled.
+
+Optional custom export path:
+
+```bash
+python -m obstagoon /path/to/project \
+  --title "My Hack Dex" \
+  --showdown-export \
+  --showdown-export-dir ./showdown-export \
+  --showdown-canonical-pokedex ./pokedex.ts
+```
+
+### Showdown export rules
+
+The generated Showdown mod is designed around these rules:
+
+- **Parent mod:** inherits from `gen9`
+- **Species precedence:** if expansion data changes an official entry, expansion data wins
+- **Custom species/forms:** generated with reserved synthetic number ranges when no official National Dex number exists
+- **Learnsets:** generated from each species' **teachable learnset only** for this custom ruleset
+- **Descriptions:** move, ability, item, and species descriptions are preserved when available for teambuilder UX
+- **Forms:** functionally distinct forms are exported separately, while cosmetic-only forms are aliased back to their base species where possible
+
+Examples of expected form handling:
+
+- regional variants such as Alolan / Galarian / Hisuian / Paldean forms → exported distinctly
+- battle-relevant forms such as Mega / Primal / Origin / Gmax forms → exported distinctly
+- cosmetic-only forms such as most Furfrou trims or non-Gmax Alcremie flavor variants → aliased to base species
+
+### Move export scope
+
+Generated move entries intentionally omit fields that are not needed for teambuilder-first export.
+The current export excludes these fields when present:
+
+- `effect`
+- `battleAnimScript`
+- `contestEffect`
+- `contestCategory`
+- `contestComboStarterId`
+- `contestComboMoves`
+
+The goal is to create valid Showdown Dex data for search, display, import/export, and custom-format validation without implementing custom battle logic for every new move.
+
+### Sprite and icon handling
+
+The client export tries to copy **raster** assets for teambuilder use:
+
+- Pokémon front sprites → `client/assets/pokemon/`
+- icons → `client/assets/icons/`
+
+Supported direct-copy source formats currently include:
+
+- `.png`
+- `.webp`
+- `.jpg`
+- `.jpeg`
+- `.gif`
+
+Non-raster or unresolved sources are tracked in:
+
+- `showdown-export/client/assets/manifest.json`
+
+That makes it easier to identify assets that still need manual conversion or a separate sprite pipeline.
+
+### Important limitations
+
+The Showdown export is currently intended for:
+
+- teambuilder support
+- custom-format validation support
+- teambuilder asset staging
+
+It does **not** guarantee full battle simulation support for custom move / ability / item effects.
+Custom entries are exported as data-first Showdown records unless their runtime behavior already exists in Showdown or matches an inherited official implementation.
+
+### Recommended workflow
+
+1. Run Obstagoon with `--showdown-export`
+2. Copy `showdown-export/server/data/mods/obstagoon/` into your Showdown server fork
+3. Merge `showdown-export/server/config/formats.obstagoon.generated.ts` into your fork's `config/formats.ts`
+4. Merge `showdown-export/server/data/aliases.obstagoon.generated.ts` into the root `data/aliases.ts` in your Showdown fork
+5. Point your Showdown client fork at the generated server fork when rebuilding teambuilder indexes
+6. Review `client/assets/manifest.json` for unresolved sprites/icons
+
+
+When `--pillow-transparency` is enabled, generated Showdown client assets in `client/assets/pokemon` and `client/assets/icons` are also rewritten with transparent backgrounds using Pillow where supported.

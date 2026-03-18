@@ -41,6 +41,8 @@ STAT_LABELS = {
     'baseSpeed': 'Base Speed',
     'baseSpAttack': 'Base Sp. Attack',
     'baseSpDefense': 'Base Sp. Defense',
+    'height': 'Height',
+    'weight': 'Weight',
 }
 
 PREFIX_RE = re.compile(r'^(SPECIES|MOVE|ABILITY|ITEM|TYPE|MAPSEC|MAP|EGG_GROUP|GROWTH|NATURE|BATTLE_MOVE_CATEGORY|DAMAGE_CATEGORY|MOVE_CATEGORY)_')

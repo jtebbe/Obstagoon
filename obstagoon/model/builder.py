@@ -260,6 +260,7 @@ def build_model(project) -> ObstagoonModel:
             description=fix_mojibake(entry.get('description')),
             types=unique_preserve_order([humanize_symbol(t) or t for t in entry.get('types', []) if t and t != 'TYPE_NONE']),
             abilities=unique_preserve_order([humanize_symbol(a) or a for a in entry.get('abilities', []) if a and a != 'ABILITY_NONE']),
+            ability_slots=[(humanize_symbol(a) or a) if a and a != 'ABILITY_NONE' else None for a in entry.get('abilities', [])[:3]],
             stats={humanize_stat_key(k) or k: (humanize_symbol(v) if isinstance(v, str) and v and not str(v).isdigit() else v) for k, v in entry.get('stats', {}).items()},
             catch_rate=entry.get('catchRate'),
             exp_yield=entry.get('expYield'),
@@ -267,6 +268,7 @@ def build_model(project) -> ObstagoonModel:
             growth_rate=humanize_symbol(entry.get('growthRate')),
             egg_groups=unique_preserve_order([humanize_symbol(g) or g for g in entry.get('eggGroups', []) if g and g != 'EGG_GROUP_NONE']),
             graphics=graphics,
+            form_changes=list(entry.get('formChanges', [])),
         )
         rec.base_species = base_species if base_species and base_species != species_id else None
         if rec.base_species:

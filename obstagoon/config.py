@@ -16,9 +16,21 @@ class SiteConfig:
     cache_dir: Path | None = None
     pillow_transparency: bool = False
     hoenn_dex: bool = False
+    documentation: bool = False
+    showdown_export: bool = False
+    showdown_export_dir: Path | None = None
+    showdown_canonical_pokedex_path: Path | None = None
 
     def ensure(self) -> None:
         self.dist_dir.mkdir(parents=True, exist_ok=True)
         if self.cache_dir is None:
             self.cache_dir = self.dist_dir / '.obstagoon-cache'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.showdown_export and self.showdown_export_dir is None:
+            base_output = self.dist_dir
+            if base_output.resolve() == Path('.').resolve():
+                self.showdown_export_dir = Path('showdown-export')
+            else:
+                self.showdown_export_dir = base_output.parent / 'showdown-export'
+        if self.showdown_export_dir is not None:
+            self.showdown_export_dir.mkdir(parents=True, exist_ok=True)
