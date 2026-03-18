@@ -71,7 +71,25 @@ pip install Pillow
 python -m obstagoon /path/to/pokeemerald-expansion --title "My Hack Dex"
 ```
 
-Optional arguments:
+
+## Documentation generation
+
+⚠️ **Important**
+
+Documentation is no longer generated automatically.
+
+You must explicitly pass the `--documentation` flag to generate documentation output.
+
+### Example:
+
+```bash
+python -m obstagoon /path/to/project \
+  --title "My Hack Dex" \
+  --documentation
+```
+
+If `--documentation` is not provided, documentation will not be generated.
+If `--showdown-export` is not provided, showdown data will not be generated.
 
 
 ```bash
@@ -251,97 +269,4 @@ dist/showdown-export/
       manifest.json
 ```
 
-### Usage
-
-```bash
-python -m obstagoon /path/to/project \
-  --title "My Hack Dex" \
-  --showdown-export
-```
-
-By default, Obstagoon prints a clearly marked verbose message with the resolved Showdown export path when `--verbose` is enabled.
-
-Optional custom export path:
-
-```bash
-python -m obstagoon /path/to/project \
-  --title "My Hack Dex" \
-  --showdown-export \
-  --showdown-export-dir ./showdown-export \
-  --showdown-canonical-pokedex ./pokedex.ts
-```
-
-### Showdown export rules
-
-The generated Showdown mod is designed around these rules:
-
-- **Parent mod:** inherits from `gen9`
-- **Species precedence:** if expansion data changes an official entry, expansion data wins
-- **Custom species/forms:** generated with reserved synthetic number ranges when no official National Dex number exists
-- **Learnsets:** generated from each species' **teachable learnset only** for this custom ruleset
-- **Descriptions:** move, ability, item, and species descriptions are preserved when available for teambuilder UX
-- **Forms:** functionally distinct forms are exported separately, while cosmetic-only forms are aliased back to their base species where possible
-
-Examples of expected form handling:
-
-- regional variants such as Alolan / Galarian / Hisuian / Paldean forms → exported distinctly
-- battle-relevant forms such as Mega / Primal / Origin / Gmax forms → exported distinctly
-- cosmetic-only forms such as most Furfrou trims or non-Gmax Alcremie flavor variants → aliased to base species
-
-### Move export scope
-
-Generated move entries intentionally omit fields that are not needed for teambuilder-first export.
-The current export excludes these fields when present:
-
-- `effect`
-- `battleAnimScript`
-- `contestEffect`
-- `contestCategory`
-- `contestComboStarterId`
-- `contestComboMoves`
-
-The goal is to create valid Showdown Dex data for search, display, import/export, and custom-format validation without implementing custom battle logic for every new move.
-
-### Sprite and icon handling
-
-The client export tries to copy **raster** assets for teambuilder use:
-
-- Pokémon front sprites → `client/assets/pokemon/`
-- icons → `client/assets/icons/`
-
-Supported direct-copy source formats currently include:
-
-- `.png`
-- `.webp`
-- `.jpg`
-- `.jpeg`
-- `.gif`
-
-Non-raster or unresolved sources are tracked in:
-
-- `showdown-export/client/assets/manifest.json`
-
-That makes it easier to identify assets that still need manual conversion or a separate sprite pipeline.
-
-### Important limitations
-
-The Showdown export is currently intended for:
-
-- teambuilder support
-- custom-format validation support
-- teambuilder asset staging
-
-It does **not** guarantee full battle simulation support for custom move / ability / item effects.
-Custom entries are exported as data-first Showdown records unless their runtime behavior already exists in Showdown or matches an inherited official implementation.
-
-### Recommended workflow
-
-1. Run Obstagoon with `--showdown-export`
-2. Copy `showdown-export/server/data/mods/obstagoon/` into your Showdown server fork
-3. Merge `showdown-export/server/config/formats.obstagoon.generated.ts` into your fork's `config/formats.ts`
-4. Merge `showdown-export/server/data/aliases.obstagoon.generated.ts` into the root `data/aliases.ts` in your Showdown fork
-5. Point your Showdown client fork at the generated server fork when rebuilding teambuilder indexes
-6. Review `client/assets/manifest.json` for unresolved sprites/icons
-
-
-When `--pillow-transparency` is enabled, generated Showdown client assets in `client/assets/pokemon` and `client/assets/icons` are also rewritten with transparent backgrounds using Pillow where supported.
+#
