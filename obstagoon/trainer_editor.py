@@ -199,6 +199,58 @@ def _parse_held_items(model: Any) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
+
+
+def _parse_species_define_aliases(project_dir: Path, model: Any) -> dict[str, str]:
+    text = _read_project_header(project_dir, 'include/constants/species.h')
+    if not text:
+        return {}
+    alias_defs: dict[str, str] = {}
+    for alias_id, target_id in re.findall(r'(?m)^\s*#define\s+(SPECIES_[A-Z0-9_]+)\s+(SPECIES_[A-Z0-9_]+)\b', strip_comments(text)):
+        if alias_id == target_id:
+            continue
+        alias_defs[alias_id] = target_id
+
+    if not alias_defs:
+        return {}
+
+    species_records = getattr(model, 'species', {}) or {}
+    existing_display_norms = {
+        _normalize_lookup_key(_species_display_name(rec, model))
+        for rec in species_records.values()
+        if getattr(rec, 'name', None)
+    }
+
+    resolved: dict[str, str] = {}
+
+    def resolve_target(species_id: str) -> Any | None:
+        seen: set[str] = set()
+        current = species_id
+        while current and current not in seen:
+            seen.add(current)
+            rec = species_records.get(current)
+            if rec is not None:
+                return rec
+            current = alias_defs.get(current)
+        return None
+
+    for alias_id, target_id in alias_defs.items():
+        rec = resolve_target(target_id)
+        if rec is None:
+            continue
+        alias_label = humanize_symbol(alias_id.replace('SPECIES_', '')) or _human_label(alias_id, 'SPECIES_')
+        alias_label = str(alias_label or '').strip().replace(' ', '-')
+        if not alias_label:
+            continue
+        if _normalize_lookup_key(alias_label) in existing_display_norms:
+            continue
+        target_display = _species_display_name(rec, model)
+        for key in {alias_id, alias_label, slug_from_symbol(alias_label), _normalize_lookup_key(alias_label), _normalize_lookup_key(alias_id)}:
+            key = str(key or '').strip()
+            if key:
+                resolved[key] = target_display
+    return resolved
+
 def _normalize_nature_value(value: str | None) -> str:
     text = str(value or '').strip()
     if not text:
@@ -659,8 +711,11 @@ function option(label,value=null){const o=document.createElement('option');o.val
 function fillSelect(select,values,includeEmpty=true,emptyLabel='None'){select.innerHTML='';if(includeEmpty)select.appendChild(option(emptyLabel,''));for(const entry of values||[]){if(entry&&typeof entry==='object'&&!Array.isArray(entry))select.appendChild(option(entry.label??entry.value??'',entry.value??entry.label??''));else select.appendChild(option(entry));}}
 function normalizeOptionKey(value){return String(value??'').toLowerCase().replace(/[’']/g,'').replace(/[.]/g,'').replace(/[-\s]+/g,'_').replace(/[^a-z0-9_♀♂]/g,'').replace(/_+/g,'_').replace(/^_|_$/g,'');}
 function findSelectOptionValue(select,value){const target=String(value??'');if(!select)return'';for(const opt of select.options||[]){if((opt.value||'')===target)return opt.value;}const normalizedTarget=normalizeOptionKey(target);if(!normalizedTarget)return'';for(const opt of select.options||[]){if(normalizeOptionKey(opt.value)===normalizedTarget||normalizeOptionKey(opt.textContent)===normalizedTarget)return opt.value;}return'';}
+function speciesAliasTarget(value){const aliases=bootstrap?.references?.species_aliases||null;const target=String(value??'');if(!aliases||!target)return'';return aliases[target]||aliases[normalizeOptionKey(target)]||'';}
+function findSpeciesOptionValue(select,value){const resolved=findSelectOptionValue(select,value);if(resolved)return resolved;const aliasTarget=speciesAliasTarget(value);return aliasTarget?findSelectOptionValue(select,aliasTarget):'';}
 function setSelectValue(select,value){const resolved=findSelectOptionValue(select,value);select.value=resolved;}
-function speciesInfo(name){const details=bootstrap?.references?.species_details||null;if(!details||!name)return null;const direct=details[name];if(direct)return direct;const fallback=normalizeOptionKey(name);return details[fallback]||null;}
+function setSpeciesSelectValue(select,value){const resolved=findSpeciesOptionValue(select,value);select.value=resolved;}
+function speciesInfo(name){const details=bootstrap?.references?.species_details||null;if(!details||!name)return null;const direct=details[name];if(direct)return direct;const fallback=normalizeOptionKey(name);if(details[fallback])return details[fallback];const aliasTarget=speciesAliasTarget(name);if(!aliasTarget)return null;return details[aliasTarget]||details[normalizeOptionKey(aliasTarget)]||null;}
 function genderDisabled(mon){const info=speciesInfo(mon.species);return !!(info&&info.genderless);}
 function availableAbilities(mon){const info=speciesInfo(mon.species);return info?.abilities?.length?info.abilities:(bootstrap.references.abilities||[]);}
 function availableMoves(mon){const info=speciesInfo(mon.species);if(!bootstrap.references.any_moves&&info?.teachable_moves?.length)return info.teachable_moves;return bootstrap.references.moves||[];}
@@ -679,11 +734,11 @@ function createMiniStatInputs(prefix,values){const wrap=document.createElement('
 function collectCardState(card){const mon=normalizeMon({species:card.querySelector('[data-field="species"]').value,nickname:card.querySelector('[data-field="nickname"]').value.trim(),gender:card.querySelector('[data-field="gender"]').value,shiny:card.querySelector('[data-field="shiny"]').value,tera_type:card.querySelector('[data-field="tera_type"]').value,level:card.querySelector('[data-field="level"]').value,held_item:card.querySelector('[data-field="held_item"]').value,happiness:card.querySelector('[data-field="happiness"]').value,dynamax_level:card.querySelector('[data-field="dynamax_level"]').value,gigantamax:card.querySelector('[data-field="gigantamax"]').value,ability:card.querySelector('[data-field="ability"]').value,nature:card.querySelector('[data-field="nature"]').value,moves:[...card.querySelectorAll('[data-move-index]')].map((sel)=>sel.value),tags:[...card.querySelectorAll('[data-tag-box]:checked')].map((box)=>box.value),ivs:{},evs:{}});for(const stat of STAT_ORDER){mon.ivs[stat]=card.querySelector(`[data-iv="${stat}"]`).value;mon.evs[stat]=card.querySelector(`[data-ev="${stat}"]`).value;}return mon;}
 function typeIconUrl(type){return `/api/type-icon?type=${encodeURIComponent(type||'')}`;}
 function updatePokemonSummary(card,mon,index){card.querySelector('.mon-name').textContent=`${index+1}. ${formatSpeciesLabel(mon)}`;const bits=[];if(mon.level)bits.push(`Lv. ${mon.level}`);if(mon.ability)bits.push(mon.ability);if(mon.tera_type)bits.push(`Tera ${mon.tera_type}`);if(mon.shiny==='Yes')bits.push('Shiny');card.querySelector('.mon-sub').textContent=bits.join(' • ')||'No optional fields set';const statsHolder=card.querySelector('.stats-row');statsHolder.innerHTML='';const info=speciesInfo(mon.species);const stats=info?.base_stats||null;for(const stat of STAT_ORDER){const pill=document.createElement('span');pill.className='pill';pill.textContent=stats&&stats[stat]!=null?`${stat} ${stats[stat]}`:`${stat} —`;statsHolder.appendChild(pill);}const chips=card.querySelector('.chips-row');chips.innerHTML='';for(const t of (info?.types||[])){const chip=document.createElement('img');chip.className='type-icon';chip.alt=`${t} type`;chip.src=typeIconUrl(t);chips.appendChild(chip);}const img=card.querySelector('.mon-preview-box img');const preview=card.querySelector('.preview-card img');if(mon.species){img.hidden=false;preview.hidden=false;const url=monPreviewUrl(mon);if(img.dataset.previewUrl!==url){img.dataset.previewUrl=url;preview.dataset.previewUrl=url;img.src=url;preview.src=url;}img.onerror=()=>{img.hidden=true;img.removeAttribute('src');delete img.dataset.previewUrl;};preview.onerror=()=>{preview.hidden=true;preview.removeAttribute('src');delete preview.dataset.previewUrl;};}else{img.hidden=true;preview.hidden=true;img.removeAttribute('src');preview.removeAttribute('src');delete img.dataset.previewUrl;delete preview.dataset.previewUrl;}}
-function repopulateMonDependentOptions(card){const mon=collectCardState(card);const genderSelect=card.querySelector('[data-field="gender"]');fillSelect(genderSelect,['M','F']);if(genderDisabled(mon)){genderSelect.value='';genderSelect.disabled=true;}else genderSelect.disabled=false;const abilitySelect=card.querySelector('[data-field="ability"]');const curAbility=abilitySelect.value;fillSelect(abilitySelect,availableAbilities(mon));setSelectValue(abilitySelect,curAbility);const moveValues=availableMoves(mon);card.querySelectorAll('[data-move-index]').forEach((sel)=>{const current=sel.value||sel.dataset.current||'';fillSelect(sel,moveValues);setSelectValue(sel,current);sel.dataset.current=sel.value;});const tagsWrap=card.querySelector('.tags-grid');tagsWrap.innerHTML='';const showTags=!!currentData.has_party_pool;card.querySelectorAll('.tags-section').forEach((node)=>node.classList.toggle('hidden',!showTags));if(showTags)for(const tag of (bootstrap.references.pool_tags||[])){const label=document.createElement('label');label.className='check-item';const box=document.createElement('input');box.type='checkbox';box.value=tag;box.dataset.tagBox='1';box.checked=(mon.tags||[]).includes(tag);const span=document.createElement('span');span.textContent=tag;label.append(box,span);tagsWrap.appendChild(label);box.addEventListener('change',()=>{syncMonCard(card);setDirty(true);});}card.querySelector('.helper.learnset').textContent=bootstrap.references.any_moves?'Move dropdown uses the full move list.':'Move dropdown is limited to this species\'s teachable learnset.';}
+function repopulateMonDependentOptions(card,seedMon=null){const mon=normalizeMon(seedMon||collectCardState(card));const genderSelect=card.querySelector('[data-field="gender"]');fillSelect(genderSelect,['M','F']);if(genderDisabled(mon)){genderSelect.value='';genderSelect.disabled=true;}else genderSelect.disabled=false;const abilitySelect=card.querySelector('[data-field="ability"]');const curAbility=abilitySelect.value;fillSelect(abilitySelect,availableAbilities(mon));setSelectValue(abilitySelect,curAbility);const moveValues=availableMoves(mon);card.querySelectorAll('[data-move-index]').forEach((sel)=>{const current=sel.value||sel.dataset.current||'';fillSelect(sel,moveValues);setSelectValue(sel,current);sel.dataset.current=sel.value;});const tagsWrap=card.querySelector('.tags-grid');tagsWrap.innerHTML='';const selectedTags=new Set(mon.tags||[]);const showTags=!!currentData.has_party_pool;card.querySelectorAll('.tags-section').forEach((node)=>node.classList.toggle('hidden',!showTags));if(showTags)for(const tag of (bootstrap.references.pool_tags||[])){const label=document.createElement('label');label.className='check-item';const box=document.createElement('input');box.type='checkbox';box.value=tag;box.setAttribute('data-tag-box','1');box.checked=selectedTags.has(tag);const span=document.createElement('span');span.textContent=tag;label.append(box,span);tagsWrap.appendChild(label);box.addEventListener('change',()=>{syncMonCard(card);setDirty(true);});}card.querySelector('.helper.learnset').textContent=bootstrap.references.any_moves?'Move dropdown uses the full move list.':'Move dropdown is limited to this species\'s teachable learnset.';}
 function syncMonCard(card){const mon=collectCardState(card);mon.evs=normalizeEvs(mon.evs);for(const stat of STAT_ORDER)card.querySelector(`[data-ev="${stat}"]`).value=mon.evs[stat];for(const stat of STAT_ORDER)card.querySelector(`[data-iv="${stat}"]`).value=clampNumber(mon.ivs[stat],0,31);if(genderDisabled(mon))card.querySelector('[data-field="gender"]').value='';updatePokemonSummary(card,mon,Number(card.dataset.index||0));}
 function attachMonListeners(card){card.querySelectorAll('select,input').forEach((node)=>node.addEventListener('change',()=>{syncMonCard(card);setDirty(true);}));card.querySelectorAll('input[type="text"],input[type="number"]').forEach((node)=>node.addEventListener('input',()=>{syncMonCard(card);setDirty(true);}));card.querySelector('.toggle-details').addEventListener('click',(e)=>{e.preventDefault();card.classList.toggle('open');const toggle=e.currentTarget;toggle.textContent=card.classList.contains('open')?'Collapse':'Edit';});card.querySelector('.pokemon-summary').addEventListener('click',(e)=>{if(e.target.closest('button'))return;card.classList.toggle('open');const toggle=card.querySelector('.toggle-details');toggle.textContent=card.classList.contains('open')?'Collapse':'Edit';});card.querySelector('[data-field="species"]').addEventListener('change',()=>{repopulateMonDependentOptions(card);syncMonCard(card);setDirty(true);});card.querySelectorAll('.delete-pokemon-btn').forEach((btn)=>btn.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();removePokemonAt(Number(card.dataset.index||0));}));const dragHandle=card.querySelector('.drag-handle');if(dragHandle)dragHandle.addEventListener('mousedown',()=>{card.draggable=true;});card.addEventListener('dragstart',(e)=>{if(!e.target.closest('.drag-handle')){e.preventDefault();card.draggable=false;return;}dragSourceIndex=Number(card.dataset.index||0);card.classList.add('dragging');if(e.dataTransfer){e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(dragSourceIndex));}});card.addEventListener('dragend',()=>{card.draggable=false;card.classList.remove('dragging');dragSourceIndex=null;clearPokemonDropIndicators();});card.addEventListener('dragover',(e)=>{if(dragSourceIndex===null)return;e.preventDefault();const placement=dropPlacement(card,e.clientY);card.classList.toggle('drop-before',placement==='before');card.classList.toggle('drop-after',placement==='after');if(e.dataTransfer)e.dataTransfer.dropEffect='move';});card.addEventListener('dragleave',(e)=>{if(!card.contains(e.relatedTarget)){card.classList.remove('drop-before','drop-after');}});card.addEventListener('drop',(e)=>{if(dragSourceIndex===null)return;e.preventDefault();const placement=dropPlacement(card,e.clientY);movePokemon(dragSourceIndex,Number(card.dataset.index||0),placement);});}
 function buildPokemonCard(mon,index){mon=normalizeMon(mon);const card=document.createElement('div');card.className='pokemon-card';card.dataset.index=String(index);card.draggable=false;card.innerHTML=`<div class="pokemon-summary"><div class="mon-preview-box"><img hidden alt="Pokémon sprite"></div><div><div class="mon-name"></div><div class="mon-sub"></div><div class="chips-row"></div><div class="stats-row"></div></div><div class="summary-actions"><button class="small drag-handle" type="button" title="Drag to reorder" aria-label="Drag to reorder">↕</button><button class="small toggle-details" type="button">Edit</button><button class="small delete-pokemon-btn" type="button" title="Delete this Pokémon" aria-label="Delete this Pokémon">−</button></div></div><div class="pokemon-details"><div class="pokemon-details-grid"><div class="pokemon-form-grid"><label class="title">Species</label><select data-field="species"></select><label class="title">Nickname</label><input data-field="nickname" type="text"><label class="title">Gender</label><select data-field="gender"></select><label class="title">Shiny</label><select data-field="shiny"></select><label class="title">Tera Type</label><select data-field="tera_type"></select><label class="title">Level</label><input data-field="level" type="number" min="1" max="100"><label class="title">Held Item</label><select data-field="held_item"></select><label class="title">Happiness</label><input data-field="happiness" type="number" min="1" max="255"><label class="title">Dynamax Level</label><input data-field="dynamax_level" type="number" min="0" max="10"><label class="title">Gigantamax</label><select data-field="gigantamax"></select><label class="title">IVs</label><div data-slot="ivs"></div><label class="title">EVs</label><div data-slot="evs"></div><label class="title">Nature</label><select data-field="nature"></select><label class="title">Ability</label><select data-field="ability"></select><label class="title">Moves</label><div class="stack"><select data-move-index="0"></select><select data-move-index="1"></select><select data-move-index="2"></select><select data-move-index="3"></select><div class="helper learnset"></div></div><label class="title tags-section">Tags</label><div class="tags-section"><div class="tags-grid"></div></div></div><aside><div class="preview-card"><img hidden alt="Pokémon preview"></div><div class="helper">Uses the Pokémon front sprite and swaps to shiny when selected.</div></aside></div><div class="pokemon-actions"><button class="small add-below" type="button">Add Below</button><button class="small delete-pokemon-btn" type="button">Delete Pokémon</button></div></div>`;
-fillSelect(card.querySelector('[data-field="species"]'),bootstrap.references.species);fillSelect(card.querySelector('[data-field="gender"]'),['M','F']);fillSelect(card.querySelector('[data-field="shiny"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="tera_type"]'),bootstrap.references.types||[]);fillSelect(card.querySelector('[data-field="held_item"]'),bootstrap.references.held_items||[]);fillSelect(card.querySelector('[data-field="gigantamax"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="nature"]'),bootstrap.references.natures||[]);card.querySelector('[data-slot="ivs"]').appendChild(createMiniStatInputs('iv',mon.ivs));card.querySelector('[data-slot="evs"]').appendChild(createMiniStatInputs('ev',mon.evs));setSelectValue(card.querySelector('[data-field="species"]'),mon.species);card.querySelector('[data-field="nickname"]').value=mon.nickname||'';setSelectValue(card.querySelector('[data-field="gender"]'),mon.gender);setSelectValue(card.querySelector('[data-field="shiny"]'),mon.shiny);setSelectValue(card.querySelector('[data-field="tera_type"]'),mon.tera_type);card.querySelector('[data-field="level"]').value=mon.level||'';setSelectValue(card.querySelector('[data-field="held_item"]'),mon.held_item);card.querySelector('[data-field="happiness"]').value=mon.happiness||'';card.querySelector('[data-field="dynamax_level"]').value=mon.dynamax_level||'';setSelectValue(card.querySelector('[data-field="gigantamax"]'),mon.gigantamax);setSelectValue(card.querySelector('[data-field="nature"]'),mon.nature);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>{sel.dataset.current=mon.moves[idx]||'';});repopulateMonDependentOptions(card);setSelectValue(card.querySelector('[data-field="ability"]'),mon.ability);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>setSelectValue(sel,mon.moves[idx]||''));attachMonListeners(card);syncMonCard(card);return card;}
+fillSelect(card.querySelector('[data-field="species"]'),bootstrap.references.species);fillSelect(card.querySelector('[data-field="gender"]'),['M','F']);fillSelect(card.querySelector('[data-field="shiny"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="tera_type"]'),bootstrap.references.types||[]);fillSelect(card.querySelector('[data-field="held_item"]'),bootstrap.references.held_items||[]);fillSelect(card.querySelector('[data-field="gigantamax"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="nature"]'),bootstrap.references.natures||[]);card.querySelector('[data-slot="ivs"]').appendChild(createMiniStatInputs('iv',mon.ivs));card.querySelector('[data-slot="evs"]').appendChild(createMiniStatInputs('ev',mon.evs));setSpeciesSelectValue(card.querySelector('[data-field="species"]'),mon.species);card.querySelector('[data-field="nickname"]').value=mon.nickname||'';setSelectValue(card.querySelector('[data-field="gender"]'),mon.gender);setSelectValue(card.querySelector('[data-field="shiny"]'),mon.shiny);setSelectValue(card.querySelector('[data-field="tera_type"]'),mon.tera_type);card.querySelector('[data-field="level"]').value=mon.level||'';setSelectValue(card.querySelector('[data-field="held_item"]'),mon.held_item);card.querySelector('[data-field="happiness"]').value=mon.happiness||'';card.querySelector('[data-field="dynamax_level"]').value=mon.dynamax_level||'';setSelectValue(card.querySelector('[data-field="gigantamax"]'),mon.gigantamax);setSelectValue(card.querySelector('[data-field="nature"]'),mon.nature);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>{sel.dataset.current=mon.moves[idx]||'';});repopulateMonDependentOptions(card,mon);setSelectValue(card.querySelector('[data-field="ability"]'),mon.ability);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>setSelectValue(sel,mon.moves[idx]||''));attachMonListeners(card);syncMonCard(card);return card;}
 function collectPokemonState(){return [...pokemonList.querySelectorAll('.pokemon-card')].map((card)=>{const mon=normalizeMon({species:card.querySelector('[data-field="species"]').value,nickname:card.querySelector('[data-field="nickname"]').value.trim(),gender:card.querySelector('[data-field="gender"]').value,shiny:card.querySelector('[data-field="shiny"]').value,tera_type:card.querySelector('[data-field="tera_type"]').value,level:clampNumber(card.querySelector('[data-field="level"]').value,1,100),held_item:card.querySelector('[data-field="held_item"]').value,happiness:clampNumber(card.querySelector('[data-field="happiness"]').value,1,255),dynamax_level:clampNumber(card.querySelector('[data-field="dynamax_level"]').value,0,10),gigantamax:card.querySelector('[data-field="gigantamax"]').value,ability:card.querySelector('[data-field="ability"]').value,nature:card.querySelector('[data-field="nature"]').value,moves:[...card.querySelectorAll('[data-move-index]')].map((sel)=>sel.value),tags:[...card.querySelectorAll('[data-tag-box]:checked')].map((box)=>box.value),ivs:{},evs:{}});for(const stat of STAT_ORDER)mon.ivs[stat]=clampNumber(card.querySelector(`[data-iv="${stat}"]`).value,0,31);for(const stat of STAT_ORDER)mon.evs[stat]=card.querySelector(`[data-ev="${stat}"]`).value;mon.evs=normalizeEvs(mon.evs);if(genderDisabled(mon))mon.gender='';return mon;}).filter((mon)=>!!mon.species);}
 function clearPokemonDropIndicators(){pokemonList.querySelectorAll('.pokemon-card').forEach((card)=>card.classList.remove('drop-before','drop-after'));}
 function dropPlacement(card,clientY){const rect=card.getBoundingClientRect();return clientY<rect.top+rect.height/2?'before':'after';}
@@ -896,6 +951,7 @@ def load_trainer_editor_references(project_dir: Path, model: Any) -> dict[str, A
         for rec in sorted(getattr(model, 'species', {}).values(), key=lambda rec: (_normalize_lookup_key(_species_display_name(rec, model)), rec.species_id))
         if getattr(rec, 'name', None)
     ]
+    species_aliases = _parse_species_define_aliases(project_dir, model)
     moves = sorted({rec.name for rec in getattr(model, 'moves', {}).values() if getattr(rec, 'name', None)})
     abilities = sorted({rec.name for rec in getattr(model, 'abilities', {}).values() if getattr(rec, 'name', None)})
     items = sorted({rec.name for rec in getattr(model, 'items', {}).values() if getattr(rec, 'name', None)})
@@ -916,6 +972,7 @@ def load_trainer_editor_references(project_dir: Path, model: Any) -> dict[str, A
         'party_sizes': [str(i) for i in range(1, 7)],
         'ai_flags': sorted(dict.fromkeys(x for x in ai_flags if x)),
         'species': list({entry['value']: entry for entry in species}.values()),
+        'species_aliases': species_aliases,
         'moves': moves,
         'abilities': abilities,
         'pokeballs': _parse_pokeballs(model),
@@ -1139,6 +1196,16 @@ class _TrainerEditorBackend:
         self.model = model
         self.references = load_trainer_editor_references(config.project_dir, model)
         self.references['any_moves'] = bool(getattr(config, 'trainer_gui_any_moves', False))
+        self._species_option_lookup = {
+            _normalize_lookup_key(entry.get('value')): entry.get('value')
+            for entry in self.references.get('species', [])
+            if isinstance(entry, dict) and entry.get('value')
+        }
+        self._species_alias_lookup = {
+            _normalize_lookup_key(key): value
+            for key, value in (self.references.get('species_aliases', {}) or {}).items()
+            if key and value
+        }
         self.sections = load_trainer_sections(config.project_dir)
         if not self.sections:
             raise TrainerEditorError('No trainers were found in src/data/trainers.party.')
@@ -1163,11 +1230,36 @@ class _TrainerEditorBackend:
             'references': self.references,
         }
 
+    def _canonical_species_name(self, value: str | None) -> str:
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        normalized = _normalize_lookup_key(text)
+        direct = self._species_option_lookup.get(normalized)
+        if direct:
+            return direct
+        alias = self._species_alias_lookup.get(normalized)
+        if alias:
+            return alias
+        rec = _resolve_species_record(self.model, text)
+        if rec is not None:
+            return _species_display_name(rec, self.model)
+        return text
+
+    def _canonicalize_state_species(self, state: dict[str, Any]) -> dict[str, Any]:
+        pokemon = []
+        for mon in (state.get('pokemon') or []):
+            next_mon = dict(mon)
+            next_mon['species'] = self._canonical_species_name(next_mon.get('species'))
+            pokemon.append(next_mon)
+        state['pokemon'] = pokemon
+        return state
+
     def get_trainer_state(self, display_id: str) -> dict[str, Any]:
         section = self.section_by_display.get(display_id)
         if section is None:
             raise KeyError(display_id)
-        return trainer_section_to_form_state(section)
+        return self._canonicalize_state_species(trainer_section_to_form_state(section))
 
     def save_trainer_state(self, display_id: str, state: dict[str, Any]) -> dict[str, Any]:
         section = self.section_by_display.get(display_id)
@@ -1175,7 +1267,7 @@ class _TrainerEditorBackend:
             raise KeyError(display_id)
         apply_form_state_to_metadata(section, state)
         save_trainer_sections(self.config.project_dir, self.sections)
-        return trainer_section_to_form_state(section)
+        return self._canonicalize_state_species(trainer_section_to_form_state(section))
 
     def trainer_picture_response(self, pic_value: str | None) -> tuple[bytes, str] | None:
         rel = resolve_trainer_picture_path(pic_value, self.picture_index)
@@ -1192,6 +1284,8 @@ class _TrainerEditorBackend:
 
     def pokemon_sprite_response(self, species_name: str | None, shiny: str | None) -> tuple[bytes, str] | None:
         rec = _resolve_species_record(self.model, species_name)
+        if rec is None:
+            rec = _resolve_species_record(self.model, self._canonical_species_name(species_name))
         if rec is None:
             return None
         shiny_enabled = str(shiny or '').strip().lower() == 'yes'

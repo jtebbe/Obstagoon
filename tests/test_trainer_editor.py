@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 from obstagoon.model.schema import ObstagoonModel, ItemRecord
 from obstagoon.trainer_editor import (
+    BROWSER_APP_HTML,
+    _parse_pokemon_block_editor,
+    _serialize_pokemon_block,
     apply_form_state_to_metadata,
     load_trainer_editor_references,
     load_trainer_sections,
@@ -527,3 +530,110 @@ Level: 57
     assert mon['held_item'] == 'Sitrus Berry'
     assert mon['ball'] == ''
     assert _serialize_pokemon_block(mon).splitlines()[0] == 'Slaking @ Sitrus Berry'
+
+
+def test_trainer_editor_species_define_aliases_map_unknown_species_to_canonical_forms(tmp_path: Path) -> None:
+    from obstagoon.config import SiteConfig
+    from obstagoon.trainer_editor import _TrainerEditorBackend
+
+    project = tmp_path / 'proj'
+    (project / 'include/constants').mkdir(parents=True)
+    (project / 'include').mkdir(exist_ok=True)
+    (project / 'src/data').mkdir(parents=True)
+    (project / 'include/constants/species.h').write_text(
+        """#define SPECIES_TORNADUS SPECIES_TORNADUS_INCARNATE
+#define SPECIES_TORNADUS_INCARNATE 641
+#define SPECIES_LANDORUS SPECIES_LANDORUS_INCARNATE
+#define SPECIES_LANDORUS_INCARNATE 645
+#define SPECIES_LANDORUS_THERIAN 1102
+""",
+        encoding='utf-8',
+    )
+    (project / 'src/data/trainers.party').write_text(
+        """=== TRAINER_TEST_1 ===
+Name: TEST
+
+Tornadus (M) @ Covert Cloak
+Ability: Prankster
+- Tailwind
+
+Landorus-Therian (M) @ Choice Scarf
+Ability: Intimidate
+- U-turn
+""",
+        encoding='utf-8',
+    )
+
+    model = _empty_model()
+    tornadus = SimpleNamespace(
+        species_id='SPECIES_TORNADUS_INCARNATE',
+        name='Tornadus',
+        base_species=None,
+        form_name='Incarnate',
+        gender_ratio='',
+        types=['Flying'],
+        abilities=['Prankster'],
+        learnsets=SimpleNamespace(teachable=[]),
+        stats={'hp': 79, 'atk': 115, 'def': 70, 'spa': 125, 'spd': 80, 'spe': 111},
+        graphics={},
+    )
+    landorus_therian = SimpleNamespace(
+        species_id='SPECIES_LANDORUS_THERIAN',
+        name='Landorus',
+        base_species='SPECIES_LANDORUS_INCARNATE',
+        form_name='Therian',
+        gender_ratio='',
+        types=['Ground', 'Flying'],
+        abilities=['Intimidate'],
+        learnsets=SimpleNamespace(teachable=[]),
+        stats={'hp': 89, 'atk': 145, 'def': 90, 'spa': 105, 'spd': 80, 'spe': 91},
+        graphics={},
+    )
+    model.species = {
+        'SPECIES_TORNADUS_INCARNATE': tornadus,
+        'SPECIES_LANDORUS_THERIAN': landorus_therian,
+    }
+
+    config = SiteConfig(project_dir=project, dist_dir=tmp_path / 'dist', site_title='Test', trainer_editor=True)
+    config.ensure()
+    backend = _TrainerEditorBackend(config=config, model=model)
+
+    refs = backend.references['species_aliases']
+    assert refs['Tornadus'] == 'Tornadus-Incarnate'
+    assert refs['SPECIES_TORNADUS'] == 'Tornadus-Incarnate'
+
+    state = backend.get_trainer_state('TEST_1')
+    assert state['pokemon'][0]['species'] == 'Tornadus-Incarnate'
+    assert state['pokemon'][1]['species'] == 'Landorus-Therian'
+
+
+
+def test_party_pool_tags_round_trip_with_multiple_tags() -> None:
+    block = (
+        "Whimsicott @ Covert Cloak\n"
+        "Ability: Prankster\n"
+        "EVs: 252 HP / 252 Def / 4 SpA\n"
+        "Bold Nature\n"
+        "IVs: 0 Atk\n"
+        "Tags: Lead / Prankster / Speed Control\n"
+        "- Tailwind\n"
+        "- Encore\n"
+    )
+
+    mon = _parse_pokemon_block_editor(block)
+    assert mon['tags'] == ['Lead', 'Prankster', 'Speed Control']
+
+    serialized = _serialize_pokemon_block(mon)
+    assert serialized is not None
+    assert 'Tags: Lead / Prankster / Speed Control' in serialized
+
+
+def test_browser_tag_checkbox_attribute_matches_collection_selector() -> None:
+    assert "querySelectorAll('[data-tag-box]:checked')" in BROWSER_APP_HTML
+    assert "setAttribute('data-tag-box','1')" in BROWSER_APP_HTML
+
+
+def test_browser_repopulate_uses_seed_tags_on_initial_render() -> None:
+    assert "function repopulateMonDependentOptions(card,seedMon=null)" in BROWSER_APP_HTML
+    assert "const selectedTags=new Set(mon.tags||[])" in BROWSER_APP_HTML
+    assert "repopulateMonDependentOptions(card,mon);" in BROWSER_APP_HTML
