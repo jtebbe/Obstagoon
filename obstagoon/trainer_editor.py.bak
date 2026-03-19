@@ -1,0 +1,1111 @@
+from __future__ import annotations
+
+import io
+import json
+import mimetypes
+import os
+import re
+import shutil
+import subprocess
+import sys
+import webbrowser
+from dataclasses import dataclass
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+from .config import SiteConfig
+from .extract.c_utils import find_matching, read_project_text, project_include_roots, strip_comments
+from .extract.parsers.trainers import (
+    KNOWN_TRAINER_FIELDS,
+    _parse_trainer_metadata,
+    _split_sections,
+    build_trainer_location_index,
+    build_trainer_picture_index,
+    resolve_trainer_picture_path,
+    title_case_words,
+)
+from .generate.site import _load_pillow_image_module, SiteGenerator
+from .normalize import fix_mojibake, humanize_symbol, slug_from_symbol
+
+
+CONTROLLED_FIELD_ORDER = [
+    'Name',
+    'Pic',
+    'Class',
+    'Gender',
+    'Items',
+    'Music',
+    'Battle Type',
+    'Double Battle',
+    'Mugshot',
+    'Starting Status',
+    'Pool Rules',
+    'Party Size',
+    'AI',
+]
+
+FIELD_NAME_MAP = {key.lower(): key for key in KNOWN_TRAINER_FIELDS}
+
+
+def _normalize_trainer_field_key(raw_key: str) -> str:
+    text = str(raw_key or '').strip()
+    return FIELD_NAME_MAP.get(text.lower(), text)
+
+
+def _parse_metadata_lines_preserving_values(lines: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in lines:
+        if ':' not in line:
+            continue
+        raw_key, raw_value = line.split(':', 1)
+        result[_normalize_trainer_field_key(raw_key)] = raw_value.strip()
+    return result
+
+
+
+STAT_ORDER = ['HP', 'Atk', 'Def', 'SpA', 'SpD', 'Spe']
+NATURE_EFFECTS = {
+    'Hardy': '', 'Lonely': '(+Atk, -Def)', 'Brave': '(+Atk, -Spe)', 'Adamant': '(+Atk, -SpAtk)', 'Naughty': '(+Atk, -SpDef)',
+    'Bold': '(+Def, -Atk)', 'Docile': '', 'Relaxed': '(+Def, -Spe)', 'Impish': '(+Def, -SpAtk)', 'Lax': '(+Def, -SpDef)',
+    'Timid': '(+Spe, -Atk)', 'Hasty': '(+Spe, -Def)', 'Serious': '', 'Jolly': '(+Spe, -SpAtk)', 'Naive': '(+Spe, -SpDef)',
+    'Modest': '(+SpAtk, -Atk)', 'Mild': '(+SpAtk, -Def)', 'Quiet': '(+SpAtk, -Spe)', 'Bashful': '', 'Rash': '(+SpAtk, -SpDef)',
+    'Calm': '(+SpDef, -Atk)', 'Gentle': '(+SpDef, -Def)', 'Sassy': '(+SpDef, -Spe)', 'Careful': '(+SpDef, -SpAtk)', 'Quirky': '',
+}
+
+def _normalize_lookup_key(value: str | None) -> str:
+    text = fix_mojibake(str(value or '').strip()).lower()
+    text = text.replace('’', "'")
+    text = text.replace('-', '_').replace(' ', '_')
+    text = text.replace("'", '')
+    text = ''.join(ch for ch in text if ch.isalnum() or ch in {'_', '♀', '♂'})
+    while '__' in text:
+        text = text.replace('__', '_')
+    return text.strip('_')
+
+def _build_species_lookup(model: Any) -> dict[str, Any]:
+    lookup = {}
+    for species_id, rec in getattr(model, 'species', {}).items():
+        keys = {species_id, rec.name, slug_from_symbol(species_id), slug_from_symbol(rec.name or ''), (rec.name or '').lower().replace(' ', '_')}
+        for key in keys:
+            norm = _normalize_lookup_key(key)
+            if norm and norm not in lookup:
+                lookup[norm] = rec
+    return lookup
+
+def _resolve_species_record(model: Any, value: str | None) -> Any | None:
+    lookup = getattr(model, '_trainer_editor_species_lookup', None)
+    if lookup is None:
+        lookup = _build_species_lookup(model)
+        setattr(model, '_trainer_editor_species_lookup', lookup)
+    return lookup.get(_normalize_lookup_key(value))
+
+def _display_graphics(site_generator: SiteGenerator, species: Any) -> dict[str, str]:
+    return site_generator._display_graphics_for_species(species)
+
+def _parse_natures(project_dir: Path) -> list[dict[str, str]]:
+    text = _read_project_header(project_dir, 'include/constants/pokemon.h') or _read_project_header(project_dir, 'include/constants/battle.h')
+    values = _parse_prefixed_symbols_anywhere(text, 'NATURE_')
+    names=[]
+    for value in values:
+        human = _human_label(value, 'NATURE_')
+        if human and human != 'Count' and human not in names:
+            names.append(human)
+    if not names:
+        names = list(NATURE_EFFECTS)
+    return [
+        {
+            'value': name,
+            'label': f"{name} {NATURE_EFFECTS[name]}".strip(),
+        }
+        for name in names if name in NATURE_EFFECTS
+    ]
+
+def _parse_pool_tags(project_dir: Path) -> list[str]:
+    text = _read_project_header(project_dir, 'include/trainer_pools.h')
+    tags = []
+    for symbol in _parse_prefixed_symbols_anywhere(text, 'POOL_TAG_'):
+        if symbol in {'POOL_TAG_NONE', 'POOL_TAG_COUNT'}:
+            continue
+        human = _human_label(symbol, 'POOL_TAG_')
+        if human and human not in tags:
+            tags.append(human)
+    return tags
+
+def _parse_pokeballs(model: Any) -> list[str]:
+    out=[]
+    for rec in getattr(model, 'items', {}).values():
+        name=getattr(rec,'name',None)
+        pocket=str(getattr(rec,'pocket', '') or '')
+        if name and ('poke ball' in pocket.lower() or pocket.upper()=='POCKET_POKE_BALLS'):
+            out.append(name)
+    return sorted(dict.fromkeys(out))
+
+
+def _normalize_nature_value(value: str | None) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if ' (' in text:
+        text = text.split(' (', 1)[0].strip()
+    if text.endswith(' Nature'):
+        text = text[:-7].strip()
+    return text
+
+
+def _base_stat_map(stats: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(stats or {})
+    alias = {
+        'HP': ('HP', 'hp', 'baseHP', 'baseHp'),
+        'Atk': ('Atk', 'atk', 'baseAttack'),
+        'Def': ('Def', 'def', 'baseDefense'),
+        'SpA': ('SpA', 'spa', 'spAtk', 'sp_atk', 'baseSpAttack'),
+        'SpD': ('SpD', 'spd', 'spDef', 'sp_def', 'baseSpDefense'),
+        'Spe': ('Spe', 'spe', 'speed', 'baseSpeed'),
+    }
+    out: dict[str, Any] = {}
+    for target, candidates in alias.items():
+        for key in candidates:
+            if key in raw and raw[key] not in {None, ''}:
+                out[target] = raw[key]
+                break
+    return out
+
+
+def _species_asset_slugs(record: Any, model: Any) -> list[str]:
+    slugs: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        cleaned = value.replace('SPECIES_', '').strip().lower()
+        cleaned = cleaned.replace('♀', 'f').replace('♂', 'm')
+        cleaned = cleaned.replace("'", '')
+        cleaned = re.sub(r'[^a-z0-9]+', '_', cleaned).strip('_')
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            slugs.append(cleaned)
+
+    add(getattr(record, 'species_id', None))
+    add(getattr(record, 'name', None))
+    base_species = getattr(record, 'base_species', None)
+    if base_species:
+        add(base_species)
+        base = getattr(model, 'species', {}).get(base_species)
+        if base:
+            add(getattr(base, 'name', None))
+            form_name = getattr(record, 'form_name', None)
+            if form_name:
+                add(f"{base.name}_{form_name}")
+                add(f"{base.species_id.replace('SPECIES_', '')}_{form_name}")
+    form_name = getattr(record, 'form_name', None)
+    if form_name:
+        add(form_name)
+    return slugs
+
+
+def _resolve_species_sprite_source(project_dir: Path, species: Any, graphics: dict[str, str] | None, model: Any) -> Path | None:
+    graphics = graphics or {}
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        path = path.resolve()
+        if path not in seen:
+            seen.add(path)
+            candidates.append(path)
+
+    for key in ('frontPic', 'frontPicFemale'):
+        value = graphics.get(key) or getattr(species, 'graphics', {}).get(key)
+        if value:
+            value_str = str(value).replace('\\', '/')
+            direct = project_dir / value_str
+            add(direct if direct.exists() else None)
+            source = Path(value_str)
+            search_dirs = [source.parent]
+            preferred = ['front.png', 'anim_front.png', 'front.webp', 'front.gif', 'front.jpg', 'front.jpeg']
+            dynamic_stem = source.name[:-8] if source.name.endswith('.4bpp.lz') else Path(source.name).stem
+            for parent in search_dirs:
+                for name in preferred + [f'{dynamic_stem}{ext}' for ext in ['.png','.webp','.gif','.jpg','.jpeg'] if dynamic_stem and dynamic_stem not in {'front','anim_front'}]:
+                    add(project_dir / parent / name)
+    for slug in _species_asset_slugs(species, model):
+        root = project_dir / 'graphics' / 'pokemon' / slug
+        for name in ('front.png', 'anim_front.png', 'front.webp', 'front.gif', 'front.jpg', 'front.jpeg'):
+            add(root / name)
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+def _species_details(site_generator: SiteGenerator, model: Any) -> dict[str, dict[str, Any]]:
+    details={}
+    for rec in getattr(model,'species',{}).values():
+        teachable = [item.get('value') for item in getattr(rec.learnsets,'teachable',[]) if item.get('value')]
+        details[rec.name]={
+            'species_id': rec.species_id,
+            'genderless': 'GENDERLESS' in str(getattr(rec,'gender_ratio', '') or '').upper(),
+            'types': list(getattr(rec,'types',[]) or []),
+            'abilities': list(dict.fromkeys([a for a in getattr(rec,'abilities',[]) if a])),
+            'teachable_moves': list(dict.fromkeys(teachable)),
+            'base_stats': _base_stat_map(getattr(rec,'stats',{})),
+            'graphics': _display_graphics(site_generator, rec),
+        }
+    return details
+
+def _parse_stat_line(value: str | None) -> dict[str, str]:
+    out = {}
+    for part in re.split(r'\s*/\s*', str(value or '').strip()):
+        m = re.match(r'^(\d+)\s+([A-Za-z]+)$', part.strip())
+        if m:
+            out[m.group(2).replace('Spa','SpA').replace('Spd','SpD')] = m.group(1)
+    return {k: out.get(k,'') for k in STAT_ORDER}
+
+def _format_stat_line(stats: dict[str, Any] | None) -> str | None:
+    if not stats:
+        return None
+    parts=[]
+    for stat in STAT_ORDER:
+        value = str((stats or {}).get(stat) or '').strip()
+        if value != '':
+            parts.append(f'{int(value)} {stat}')
+    return ' / '.join(parts) or None
+
+def _parse_pokemon_header(line: str) -> dict[str, str]:
+    line = str(line or '').strip()
+    held_item = None
+    if ' @ ' in line:
+        line, held_item = line.rsplit(' @ ',1)
+    gender = ''
+    m = re.search(r'\s*\(([MF])\)\s*$', line)
+    if m:
+        gender = m.group(1)
+        line = line[:m.start()].strip()
+    nickname = ''
+    species = line.strip()
+    m = re.match(r'^(.*?)\s*\((.*)\)$', line)
+    if m:
+        nickname = m.group(1).strip()
+        species = m.group(2).strip()
+    return {'species': species, 'nickname': nickname, 'gender': gender, 'held_item': (held_item or '').strip()}
+
+def _parse_pokemon_block_editor(block: str) -> dict[str, Any]:
+    lines=[line.rstrip() for line in str(block or '').splitlines() if line.strip()]
+    if not lines:
+        return {}
+    header = _parse_pokemon_header(lines[0])
+    mon = {'species': header['species'], 'nickname': header['nickname'], 'gender': header['gender'], 'shiny': '', 'tera_type': '', 'level': '', 'ball': header['held_item'], 'happiness': '', 'dynamax_level': '', 'gigantamax': '', 'ability': '', 'nature': '', 'moves': [], 'tags': [], 'ivs': {k:'' for k in STAT_ORDER}, 'evs': {k:'' for k in STAT_ORDER}}
+    for line in lines[1:]:
+        stripped=line.strip()
+        if stripped.startswith('- '):
+            move = stripped[2:].strip()
+            if move:
+                mon['moves'].append(move)
+            continue
+        if ':' in stripped:
+            key, value = stripped.split(':',1)
+            key = (title_case_words(key.strip()) or key.strip())
+            value = value.strip()
+            if key == 'Ability': mon['ability'] = value
+            elif key == 'Level': mon['level'] = value
+            elif key == 'Shiny': mon['shiny'] = 'Yes' if value.lower() == 'yes' else ('No' if value.lower() == 'no' else '')
+            elif key == 'Tera Type': mon['tera_type'] = value
+            elif key in {'Evs','EVs'}: mon['evs'] = _parse_stat_line(value)
+            elif key in {'Ivs','IVs'}: mon['ivs'] = _parse_stat_line(value)
+            elif key in {'Tags','Tag'}: mon['tags'] = [part.strip() for part in re.split(r'\s*/\s*', value) if part.strip()]
+            elif key == 'Nature': mon['nature'] = _normalize_nature_value(value)
+            elif key == 'Happiness': mon['happiness'] = value
+            elif key == 'Dynamax Level': mon['dynamax_level'] = value
+            elif key == 'Gigantamax': mon['gigantamax'] = 'Yes' if value.lower() == 'yes' else ('No' if value.lower() == 'no' else '')
+        elif stripped.endswith(' Nature'):
+            mon['nature'] = _normalize_nature_value(stripped[:-7].strip())
+    mon['moves'] = (mon['moves'] + ['', '', '', ''])[:4]
+    return mon
+
+def _mon_is_effectively_empty(mon: dict[str, Any]) -> bool:
+    return not str(mon.get('species') or '').strip()
+
+def _serialize_pokemon_block(mon: dict[str, Any]) -> str | None:
+    if _mon_is_effectively_empty(mon):
+        return None
+    species = str(mon.get('species') or '').strip()
+    nickname = str(mon.get('nickname') or '').strip()
+    gender = str(mon.get('gender') or '').strip()
+    held_item = str(mon.get('ball') or '').strip()
+    header = f'{nickname} ({species})' if nickname else species
+    if gender in {'M','F'}:
+        header += f' ({gender})'
+    if held_item:
+        header += f' @ {held_item}'
+    lines=[header]
+    fields=[('Ability', mon.get('ability')), ('Level', mon.get('level')), ('Shiny', mon.get('shiny')), ('Tera Type', mon.get('tera_type')), ('Happiness', mon.get('happiness')), ('Dynamax Level', mon.get('dynamax_level')), ('Gigantamax', mon.get('gigantamax'))]
+    for key,val in fields:
+        val=str(val or '').strip()
+        if val:
+            lines.append(f'{key}: {val}')
+    evs = _format_stat_line(mon.get('evs'))
+    if evs:
+        lines.append(f'EVs: {evs}')
+    nature = _normalize_nature_value(mon.get('nature'))
+    if nature:
+        lines.append(f'Nature: {nature}')
+    ivs = _format_stat_line(mon.get('ivs'))
+    if ivs:
+        lines.append(f'IVs: {ivs}')
+    tags = [str(t).strip() for t in (mon.get('tags') or []) if str(t).strip()]
+    if tags:
+        lines.append(f'Tags: {' / '.join(tags)}')
+    for move in (mon.get('moves') or [])[:4]:
+        move=str(move or '').strip()
+        if move:
+            lines.append(f'- {move}')
+    return '\n'.join(lines)
+
+BROWSER_APP_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Obstagoon Trainer Editor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10131a;
+      --panel: #171c26;
+      --panel-2: #1d2430;
+      --panel-3: #11161f;
+      --text: #e6edf3;
+      --muted: #9aa6b2;
+      --accent: #7c9cff;
+      --border: #2c3646;
+      --ok: #4fd1a5;
+      --chip: #202838;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    header { padding: 16px 20px; border-bottom: 1px solid var(--border); background: rgba(10, 14, 20, 0.95); position: sticky; top: 0; z-index: 20; backdrop-filter: blur(6px); }
+    header .row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+    header h1 { margin: 0 12px 0 0; font-size: 22px; }
+    select, input[type="text"], input[type="number"], button { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel); color: var(--text); font: inherit; }
+    input[type="checkbox"] { accent-color: var(--accent); }
+    button { cursor: pointer; background: var(--panel-2); }
+    button.primary { background: var(--accent); color: #10131a; border-color: transparent; font-weight: 700; }
+    button.ghost { background: transparent; }
+    button.small { padding: 8px 10px; font-size: 13px; }
+    .status { color: var(--muted); min-width: 180px; }
+    .status.saved { color: var(--ok); }
+    .status.dirty { color: #ffd866; }
+    main { max-width: 1440px; margin: 0 auto; padding: 20px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+    .tab-btn.active { background: var(--accent); color: #10131a; border-color: transparent; font-weight: 700; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 20px; display: none; }
+    .panel.active { display: block; }
+    .fields-grid { display: grid; grid-template-columns: minmax(320px, 1fr) 220px; gap: 24px; align-items: start; }
+    .form-grid { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 12px 16px; align-items: start; }
+    .form-grid label.title { padding-top: 10px; color: var(--muted); font-weight: 600; }
+    .stack { display: flex; flex-direction: column; gap: 8px; }
+    .stack select, .stack input[type="text"], .stack input[type="number"] { width: 100%; }
+    .preview-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 18px; padding: 16px; width: 136px; min-height: 136px; display: flex; align-items: center; justify-content: center; margin: 0 auto; }
+    .preview-card img { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: pixelated; display: block; margin: 0 auto; }
+    .check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; }
+    .check-item { display: flex; align-items: center; gap: 10px; min-height: 36px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+    .pokemon-list { display:flex; flex-direction:column; gap:12px; }
+    .pokemon-card { border:1px solid var(--border); border-radius:18px; background:var(--panel-2); overflow:hidden; }
+    .pokemon-summary { display:grid; grid-template-columns: 96px minmax(0,1fr) auto; gap:14px; padding:14px; align-items:center; cursor:pointer; }
+    .mon-preview-box { width:72px; height:72px; display:grid; place-items:center; border:1px solid var(--border); border-radius:14px; background:var(--panel-3); margin:0 auto; }
+    .mon-preview-box img { width:auto; height:auto; max-width:64px; max-height:64px; image-rendering:pixelated; }
+    .mon-name { font-weight:700; font-size:18px; }
+    .mon-sub { color: var(--muted); font-size: 13px; }
+    .stats-row, .chips-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .chips-row .pill { font-size:12px; }
+    .pokemon-details { display:none; border-top:1px solid var(--border); padding:16px; background:rgba(0,0,0,0.08); }
+    .pokemon-card.open .pokemon-details { display:block; }
+    .pokemon-details-grid { display:grid; grid-template-columns: minmax(320px,1fr) 280px; gap:20px; align-items:start; }
+    .pokemon-form-grid { display:grid; grid-template-columns: 160px minmax(0,1fr); gap:10px 14px; align-items:start; }
+    .pokemon-form-grid label.title { color: var(--muted); font-weight:600; padding-top:8px; }
+    .stat-grid-6 { display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap:8px; }
+    .mini-input label { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
+    .tags-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px 12px; }
+    .helper { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .hidden { display:none !important; }
+    #unsavedModal { position: fixed; inset: 0; background: rgba(5, 8, 12, 0.72); display: none; align-items: center; justify-content: center; z-index: 50; }
+    #unsavedModal.open { display:flex; }
+    .modal-card { width:min(480px, calc(100vw - 32px)); background:var(--panel); border:1px solid var(--border); border-radius:18px; padding:20px; box-shadow:0 24px 60px rgba(0,0,0,0.45); }
+    .modal-actions { display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap; margin-top:18px; }
+    @media (max-width: 960px) { .fields-grid, .pokemon-details-grid { grid-template-columns: 1fr; } .form-grid, .pokemon-form-grid { grid-template-columns: 1fr; } .form-grid label.title, .pokemon-form-grid label.title { padding-top:0; } .pokemon-summary { grid-template-columns: 72px minmax(0,1fr); } .pokemon-summary > :last-child { grid-column: 1 / -1; justify-self: end; } .stat-grid-6 { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+  </style>
+</head>
+<body>
+<header><div class="row"><h1>Obstagoon Trainer Editor</h1><label><span class="muted">Trainer ID</span><br><select id="trainerSelect"></select></label><button id="saveBtn" class="primary">Save</button><span id="statusText" class="status">Loading…</span></div></header>
+<main>
+<div class="tabs"><button class="tab-btn active" data-tab="fields">Trainer Fields</button><button class="tab-btn" data-tab="statuses">Starting Statuses</button><button class="tab-btn" data-tab="ai">AI</button><button class="tab-btn" data-tab="pokemon">Pokemon</button></div>
+<section id="panel-fields" class="panel active"><div class="fields-grid"><div class="form-grid"><label class="title" for="nameInput">Name</label><input id="nameInput" type="text"><label class="title" for="picSelect">Trainer Pic</label><select id="picSelect"></select><label class="title" for="classSelect">Trainer Class</label><select id="classSelect"></select><label class="title" for="genderSelect">Gender</label><select id="genderSelect"></select><label class="title">Items</label><div class="stack"><select id="item1Select"></select><select id="item2Select"></select><select id="item3Select"></select></div><label class="title" for="musicSelect">Music</label><select id="musicSelect"></select><label class="title" id="battleFieldLabel" for="battleValueSelect">Double Battle</label><select id="battleValueSelect"></select><label class="title" for="mugshotSelect">Mugshot</label><select id="mugshotSelect"></select><label class="title" for="poolRulesSelect">Pool Rules</label><select id="poolRulesSelect"></select><label class="title" for="partySizeSelect">Party Size</label><select id="partySizeSelect"></select></div><aside class="preview-card"><img id="trainerPreview" alt="Trainer preview" hidden></aside></div></section>
+<section id="panel-statuses" class="panel"><div class="check-grid" id="startingStatusList"></div></section>
+<section id="panel-ai" class="panel"><div class="check-grid" id="aiFlagsList"></div></section>
+<section id="panel-pokemon" class="panel"><div class="toolbar"><div class="pill"><strong id="pokemonCount">0</strong><span class="muted">Pokémon</span></div><div class="muted" id="pokemonLimitText"></div></div><div id="pokemonList" class="pokemon-list"></div></section>
+</main>
+<div id="unsavedModal" aria-hidden="true"><div class="modal-card"><h2 style="margin-top:0;">Unsaved changes</h2><p>You have unsaved changes. What would you like to do before switching trainers?</p><div class="modal-actions"><button id="cancelSwitchBtn">Cancel</button><button id="discardSwitchBtn" class="ghost">Switch Without Saving</button><button id="saveSwitchBtn" class="primary">Save and Switch</button></div></div></div>
+<script>
+let bootstrap=null,currentTrainerId=null,pendingTrainerId=null,dirty=false,currentData=null;
+const STAT_ORDER=['HP','Atk','Def','SpA','SpD','Spe'];
+const TYPES=['Bug','Dark','Dragon','Electric','Fairy','Fighting','Fire','Flying','Ghost','Grass','Ground','Ice','Normal','Poison','Psychic','Rock','Steel','Water','Stellar'];
+const el=(id)=>document.getElementById(id);
+const trainerSelect=el('trainerSelect'),saveBtn=el('saveBtn'),statusText=el('statusText'),modal=el('unsavedModal');
+const nameInput=el('nameInput'),picSelect=el('picSelect'),classSelect=el('classSelect'),genderSelect=el('genderSelect');
+const item1Select=el('item1Select'),item2Select=el('item2Select'),item3Select=el('item3Select'),musicSelect=el('musicSelect'),battleFieldLabel=el('battleFieldLabel'),battleValueSelect=el('battleValueSelect'),mugshotSelect=el('mugshotSelect'),poolRulesSelect=el('poolRulesSelect'),partySizeSelect=el('partySizeSelect'),trainerPreview=el('trainerPreview'),startingStatusList=el('startingStatusList'),aiFlagsList=el('aiFlagsList'),pokemonList=el('pokemonList'),pokemonCount=el('pokemonCount'),pokemonLimitText=el('pokemonLimitText');
+function setDirty(next){dirty=!!next;statusText.textContent=dirty?'Unsaved changes':'Saved';statusText.className=dirty?'status dirty':'status saved';}
+function option(label,value=null){const o=document.createElement('option');o.value=value??label;o.textContent=label;return o;}
+function fillSelect(select,values,includeEmpty=true,emptyLabel='None'){select.innerHTML='';if(includeEmpty)select.appendChild(option(emptyLabel,''));for(const entry of values||[]){if(entry&&typeof entry==='object'&&!Array.isArray(entry))select.appendChild(option(entry.label??entry.value??'',entry.value??entry.label??''));else select.appendChild(option(entry));}}
+function setSelectValue(select,value){select.value=value||'';if(select.value!==(value||''))select.value='';}
+function speciesInfo(name){return bootstrap?.references?.species_details?.[name]||null;}
+function genderDisabled(mon){const info=speciesInfo(mon.species);return !!(info&&info.genderless);}
+function availableAbilities(mon){const info=speciesInfo(mon.species);return info?.abilities?.length?info.abilities:(bootstrap.references.abilities||[]);}
+function availableMoves(mon){const info=speciesInfo(mon.species);if(!bootstrap.references.any_moves&&info?.teachable_moves?.length)return info.teachable_moves;return bootstrap.references.moves||[];}
+function trainerPreviewUrl(pic){return `/api/trainer-picture?pic=${encodeURIComponent(pic||'')}`;}
+function monPreviewUrl(mon){const q=new URLSearchParams({species:mon.species||'',shiny:mon.shiny||''});return `/api/pokemon-sprite?${q.toString()}`;}
+function createCheckboxList(container,values,selected){container.innerHTML='';const chosen=new Set(selected||[]);for(const value of values||[]){const label=document.createElement('label');label.className='check-item';const box=document.createElement('input');box.type='checkbox';box.value=value;box.checked=chosen.has(value);const span=document.createElement('span');span.textContent=value;label.append(box,span);container.appendChild(label);box.addEventListener('change',()=>setDirty(true));}}
+function checkedValues(container){return [...container.querySelectorAll('input[type="checkbox"]:checked')].map((box)=>box.value);}
+function clampNumber(value,min,max){if(value===''||value==null)return '';let num=Number(value);if(!Number.isFinite(num))return '';if(min!=null)num=Math.max(min,num);if(max!=null)num=Math.min(max,num);return String(Math.trunc(num));}
+function normalizeEvs(evs){const next={};let total=0;for(const stat of STAT_ORDER){const raw=clampNumber(evs[stat],0,252);let n=raw===''?0:Number(raw);if(total+n>510)n=Math.max(0,510-total);total+=n;next[stat]=n?String(n):'';}return next;}
+function normalizeMon(mon){const base={species:'',nickname:'',gender:'',shiny:'',tera_type:'',level:'',ball:'',happiness:'',dynamax_level:'',gigantamax:'',ability:'',nature:'',tags:[],moves:['','','',''],ivs:{HP:'',Atk:'',Def:'',SpA:'',SpD:'',Spe:''},evs:{HP:'',Atk:'',Def:'',SpA:'',SpD:'',Spe:''}};const merged={...base,...(mon||{})};merged.moves=Array.isArray(merged.moves)?merged.moves.slice(0,4):['','','',''];while(merged.moves.length<4)merged.moves.push('');merged.ivs={...base.ivs,...(merged.ivs||{})};merged.evs={...base.evs,...(merged.evs||{})};merged.tags=Array.isArray(merged.tags)?merged.tags:[];if(merged.nature&&String(merged.nature).includes('('))merged.nature=String(merged.nature).split(' (',1)[0].trim();if(String(merged.nature||'').endsWith(' Nature'))merged.nature=String(merged.nature).slice(0,-7).trim();return merged;}
+function formatSpeciesLabel(mon){const species=mon.species||'Empty';let text=species;if(mon.nickname)text=`${mon.nickname} (${species})`;if(mon.gender)text+=` (${mon.gender})`;return text;}
+function populateStaticOptions(){const refs=bootstrap.references;fillSelect(picSelect,refs.trainer_pics);fillSelect(classSelect,refs.trainer_classes);fillSelect(genderSelect,refs.genders);fillSelect(item1Select,refs.items);fillSelect(item2Select,refs.items);fillSelect(item3Select,refs.items);fillSelect(musicSelect,refs.encounter_music);fillSelect(mugshotSelect,refs.mugshot_colors);fillSelect(poolRulesSelect,refs.pool_rules);fillSelect(partySizeSelect,refs.party_sizes);fillSelect(battleValueSelect,refs.double_battle,false);createCheckboxList(startingStatusList,refs.starting_statuses,[]);createCheckboxList(aiFlagsList,refs.ai_flags,[]);}
+function updateBattleFieldUI(state){const usesBattleType=(state.battle_field||'')==='Battle Type';battleFieldLabel.textContent=usesBattleType?'Battle Type':'Double Battle';fillSelect(battleValueSelect,usesBattleType?bootstrap.references.battle_type_options:bootstrap.references.double_battle,false);setSelectValue(battleValueSelect,state.battle_value||(usesBattleType?'Singles':'No'));}
+function renderTrainerPicture(pic){if(!pic){trainerPreview.hidden=true;trainerPreview.removeAttribute('src');return;}trainerPreview.hidden=false;trainerPreview.src=trainerPreviewUrl(pic);trainerPreview.onerror=()=>{trainerPreview.hidden=true;trainerPreview.removeAttribute('src');};}
+function createMiniStatInputs(prefix,values){const wrap=document.createElement('div');wrap.className='stat-grid-6';for(const stat of STAT_ORDER){const box=document.createElement('div');box.className='mini-input';const label=document.createElement('label');label.textContent=stat;const input=document.createElement('input');input.type='number';input.value=values&&values[stat]?values[stat]:'';if(prefix==='iv')input.dataset.iv=stat;else input.dataset.ev=stat;box.append(label,input);wrap.appendChild(box);}return wrap;}
+function collectCardState(card){const mon=normalizeMon({species:card.querySelector('[data-field="species"]').value,nickname:card.querySelector('[data-field="nickname"]').value.trim(),gender:card.querySelector('[data-field="gender"]').value,shiny:card.querySelector('[data-field="shiny"]').value,tera_type:card.querySelector('[data-field="tera_type"]').value,level:card.querySelector('[data-field="level"]').value,ball:card.querySelector('[data-field="ball"]').value,happiness:card.querySelector('[data-field="happiness"]').value,dynamax_level:card.querySelector('[data-field="dynamax_level"]').value,gigantamax:card.querySelector('[data-field="gigantamax"]').value,ability:card.querySelector('[data-field="ability"]').value,nature:card.querySelector('[data-field="nature"]').value,moves:[...card.querySelectorAll('[data-move-index]')].map((sel)=>sel.value),tags:[...card.querySelectorAll('[data-tag-box]:checked')].map((box)=>box.value),ivs:{},evs:{}});for(const stat of STAT_ORDER){mon.ivs[stat]=card.querySelector(`[data-iv="${stat}"]`).value;mon.evs[stat]=card.querySelector(`[data-ev="${stat}"]`).value;}return mon;}
+function updatePokemonSummary(card,mon,index){card.querySelector('.mon-name').textContent=`${index+1}. ${formatSpeciesLabel(mon)}`;const bits=[];if(mon.level)bits.push(`Lv. ${mon.level}`);if(mon.ability)bits.push(mon.ability);if(mon.tera_type)bits.push(`Tera ${mon.tera_type}`);if(mon.shiny==='Yes')bits.push('Shiny');card.querySelector('.mon-sub').textContent=bits.join(' • ')||'No optional fields set';const statsHolder=card.querySelector('.stats-row');statsHolder.innerHTML='';const info=speciesInfo(mon.species);const stats=info?.base_stats||null;for(const stat of STAT_ORDER){const pill=document.createElement('span');pill.className='pill';pill.textContent=stats&&stats[stat]!=null?`${stat} ${stats[stat]}`:`${stat} —`;statsHolder.appendChild(pill);}const chips=card.querySelector('.chips-row');chips.innerHTML='';for(const t of (info?.types||[])){const chip=document.createElement('span');chip.className='pill';chip.textContent=t;chips.appendChild(chip);}const img=card.querySelector('.mon-preview-box img');const preview=card.querySelector('.preview-card img');if(mon.species){img.hidden=false;preview.hidden=false;const url=monPreviewUrl(mon);img.src=url;preview.src=url;const hide=()=>{};img.onerror=()=>{img.hidden=true;img.removeAttribute('src');};preview.onerror=()=>{preview.hidden=true;preview.removeAttribute('src');};}else{img.hidden=true;preview.hidden=true;img.removeAttribute('src');preview.removeAttribute('src');}}
+function repopulateMonDependentOptions(card){const mon=collectCardState(card);const genderSelect=card.querySelector('[data-field="gender"]');fillSelect(genderSelect,['M','F']);if(genderDisabled(mon)){genderSelect.value='';genderSelect.disabled=true;}else genderSelect.disabled=false;const abilitySelect=card.querySelector('[data-field="ability"]');const curAbility=abilitySelect.value;fillSelect(abilitySelect,availableAbilities(mon));setSelectValue(abilitySelect,curAbility);const moveValues=availableMoves(mon);card.querySelectorAll('[data-move-index]').forEach((sel)=>{const current=sel.value||sel.dataset.current||'';fillSelect(sel,moveValues);setSelectValue(sel,current);sel.dataset.current=sel.value;});const tagsWrap=card.querySelector('.tags-grid');tagsWrap.innerHTML='';const showTags=!!currentData.has_party_pool;card.querySelectorAll('.tags-section').forEach((node)=>node.classList.toggle('hidden',!showTags));if(showTags)for(const tag of (bootstrap.references.pool_tags||[])){const label=document.createElement('label');label.className='check-item';const box=document.createElement('input');box.type='checkbox';box.value=tag;box.dataset.tagBox='1';box.checked=(mon.tags||[]).includes(tag);const span=document.createElement('span');span.textContent=tag;label.append(box,span);tagsWrap.appendChild(label);box.addEventListener('change',()=>{syncMonCard(card);setDirty(true);});}card.querySelector('.helper.learnset').textContent=bootstrap.references.any_moves?'Move dropdown uses the full move list.':'Move dropdown is limited to this species\'s teachable learnset.';}
+function syncMonCard(card){const mon=collectCardState(card);mon.evs=normalizeEvs(mon.evs);for(const stat of STAT_ORDER)card.querySelector(`[data-ev="${stat}"]`).value=mon.evs[stat];for(const stat of STAT_ORDER)card.querySelector(`[data-iv="${stat}"]`).value=clampNumber(mon.ivs[stat],0,31);if(genderDisabled(mon))card.querySelector('[data-field="gender"]').value='';updatePokemonSummary(card,mon,Number(card.dataset.index||0));}
+function attachMonListeners(card){card.querySelectorAll('select,input').forEach((node)=>node.addEventListener('change',()=>{syncMonCard(card);setDirty(true);}));card.querySelectorAll('input[type="text"],input[type="number"]').forEach((node)=>node.addEventListener('input',()=>{syncMonCard(card);setDirty(true);}));card.querySelector('.toggle-details').addEventListener('click',(e)=>{e.preventDefault();card.classList.toggle('open');});card.querySelector('.pokemon-summary').addEventListener('click',(e)=>{if(e.target.closest('button'))return;card.classList.toggle('open');});card.querySelector('[data-field="species"]').addEventListener('change',()=>{repopulateMonDependentOptions(card);syncMonCard(card);setDirty(true);});}
+function buildPokemonCard(mon,index){mon=normalizeMon(mon);const card=document.createElement('div');card.className='pokemon-card';card.dataset.index=String(index);card.innerHTML=`<div class="pokemon-summary"><div class="mon-preview-box"><img hidden alt="Pokémon sprite"></div><div><div class="mon-name"></div><div class="mon-sub"></div><div class="chips-row"></div><div class="stats-row"></div></div><button class="small toggle-details">Edit</button></div><div class="pokemon-details"><div class="pokemon-details-grid"><div class="pokemon-form-grid"><label class="title">Species</label><select data-field="species"></select><label class="title">Nickname</label><input data-field="nickname" type="text"><label class="title">Gender</label><select data-field="gender"></select><label class="title">Shiny</label><select data-field="shiny"></select><label class="title">Tera Type</label><select data-field="tera_type"></select><label class="title">Level</label><input data-field="level" type="number" min="1" max="100"><label class="title">Ball</label><select data-field="ball"></select><label class="title">Happiness</label><input data-field="happiness" type="number" min="1" max="255"><label class="title">Dynamax Level</label><input data-field="dynamax_level" type="number" min="0" max="10"><label class="title">Gigantamax</label><select data-field="gigantamax"></select><label class="title">IVs</label><div data-slot="ivs"></div><label class="title">EVs</label><div data-slot="evs"></div><label class="title">Nature</label><select data-field="nature"></select><label class="title">Ability</label><select data-field="ability"></select><label class="title">Moves</label><div class="stack"><select data-move-index="0"></select><select data-move-index="1"></select><select data-move-index="2"></select><select data-move-index="3"></select><div class="helper learnset"></div></div><label class="title tags-section">Tags</label><div class="tags-section"><div class="tags-grid"></div></div></div><aside><div class="preview-card"><img hidden alt="Pokémon preview"></div><div class="helper">Uses the Pokémon front sprite and swaps to shiny when selected.</div></aside></div></div>`;
+fillSelect(card.querySelector('[data-field="species"]'),bootstrap.references.species);fillSelect(card.querySelector('[data-field="gender"]'),['M','F']);fillSelect(card.querySelector('[data-field="shiny"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="tera_type"]'),TYPES);fillSelect(card.querySelector('[data-field="ball"]'),bootstrap.references.pokeballs||[]);fillSelect(card.querySelector('[data-field="gigantamax"]'),['Yes','No']);fillSelect(card.querySelector('[data-field="nature"]'),bootstrap.references.natures||[]);card.querySelector('[data-slot="ivs"]').appendChild(createMiniStatInputs('iv',mon.ivs));card.querySelector('[data-slot="evs"]').appendChild(createMiniStatInputs('ev',mon.evs));setSelectValue(card.querySelector('[data-field="species"]'),mon.species);card.querySelector('[data-field="nickname"]').value=mon.nickname||'';setSelectValue(card.querySelector('[data-field="gender"]'),mon.gender);setSelectValue(card.querySelector('[data-field="shiny"]'),mon.shiny);setSelectValue(card.querySelector('[data-field="tera_type"]'),mon.tera_type);card.querySelector('[data-field="level"]').value=mon.level||'';setSelectValue(card.querySelector('[data-field="ball"]'),mon.ball);card.querySelector('[data-field="happiness"]').value=mon.happiness||'';card.querySelector('[data-field="dynamax_level"]').value=mon.dynamax_level||'';setSelectValue(card.querySelector('[data-field="gigantamax"]'),mon.gigantamax);setSelectValue(card.querySelector('[data-field="nature"]'),mon.nature);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>{sel.dataset.current=mon.moves[idx]||'';});repopulateMonDependentOptions(card);setSelectValue(card.querySelector('[data-field="ability"]'),mon.ability);card.querySelectorAll('[data-move-index]').forEach((sel,idx)=>setSelectValue(sel,mon.moves[idx]||''));attachMonListeners(card);syncMonCard(card);return card;}
+function collectPokemonState(){return [...pokemonList.querySelectorAll('.pokemon-card')].map((card)=>{const mon=normalizeMon({species:card.querySelector('[data-field="species"]').value,nickname:card.querySelector('[data-field="nickname"]').value.trim(),gender:card.querySelector('[data-field="gender"]').value,shiny:card.querySelector('[data-field="shiny"]').value,tera_type:card.querySelector('[data-field="tera_type"]').value,level:clampNumber(card.querySelector('[data-field="level"]').value,1,100),ball:card.querySelector('[data-field="ball"]').value,happiness:clampNumber(card.querySelector('[data-field="happiness"]').value,1,255),dynamax_level:clampNumber(card.querySelector('[data-field="dynamax_level"]').value,0,10),gigantamax:card.querySelector('[data-field="gigantamax"]').value,ability:card.querySelector('[data-field="ability"]').value,nature:card.querySelector('[data-field="nature"]').value,moves:[...card.querySelectorAll('[data-move-index]')].map((sel)=>sel.value),tags:[...card.querySelectorAll('[data-tag-box]:checked')].map((box)=>box.value),ivs:{},evs:{}});for(const stat of STAT_ORDER)mon.ivs[stat]=clampNumber(card.querySelector(`[data-iv="${stat}"]`).value,0,31);for(const stat of STAT_ORDER)mon.evs[stat]=card.querySelector(`[data-ev="${stat}"]`).value;mon.evs=normalizeEvs(mon.evs);if(genderDisabled(mon))mon.gender='';return mon;});}
+function collectGeneralState(){return{trainer_id:currentData.trainer_id,display_id:currentData.display_id,battle_field:currentData.battle_field,name:nameInput.value.trim(),pic:picSelect.value,class_name:classSelect.value,gender:genderSelect.value,items:[item1Select.value,item2Select.value,item3Select.value],music:musicSelect.value,battle_value:battleValueSelect.value,mugshot:mugshotSelect.value,starting_statuses:checkedValues(startingStatusList),pool_rules:poolRulesSelect.value,party_size:partySizeSelect.value,ai_flags:checkedValues(aiFlagsList),pokemon:collectPokemonState()};}
+function renderPokemonTab(){pokemonList.innerHTML='';const mons=Array.isArray(currentData.pokemon)?currentData.pokemon:[];const limit=currentData.has_party_pool?256:6;pokemonLimitText.textContent=currentData.has_party_pool?'Pool trainer: up to 256 Pokémon.':'Standard trainer: up to 6 Pokémon.';pokemonCount.textContent=String(mons.length);for(let i=0;i<limit;i++)pokemonList.appendChild(buildPokemonCard(mons[i]||{},i));}
+function populateTrainerState(state){currentData=state;nameInput.value=state.name||'';setSelectValue(picSelect,state.pic);setSelectValue(classSelect,state.class_name);setSelectValue(genderSelect,state.gender);const items=state.items||['','',''];setSelectValue(item1Select,items[0]);setSelectValue(item2Select,items[1]);setSelectValue(item3Select,items[2]);setSelectValue(musicSelect,state.music);setSelectValue(mugshotSelect,state.mugshot&&state.mugshot!=='None'?state.mugshot:'');setSelectValue(poolRulesSelect,state.pool_rules&&state.pool_rules!=='None'?state.pool_rules:'');setSelectValue(partySizeSelect,state.party_size);updateBattleFieldUI(state);createCheckboxList(startingStatusList,bootstrap.references.starting_statuses,state.starting_statuses||[]);createCheckboxList(aiFlagsList,bootstrap.references.ai_flags,state.ai_flags||[]);renderTrainerPicture(state.pic);renderPokemonTab();setDirty(false);}
+async function loadTrainer(displayId){statusText.textContent='Loading…';statusText.className='status';const res=await fetch(`/api/trainer?trainer_id=${encodeURIComponent(displayId)}`);const data=await res.json();currentTrainerId=displayId;populateTrainerState(data);trainerSelect.value=displayId;}
+async function saveTrainer(){const state=collectGeneralState();const res=await fetch('/api/trainer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trainer_id:currentTrainerId,state})});const data=await res.json();if(!res.ok||!data.ok){statusText.textContent=data.error||'Save failed';statusText.className='status';return false;}await loadTrainer(currentTrainerId);return true;}
+function bindGeneralInputs(){[nameInput,picSelect,classSelect,genderSelect,item1Select,item2Select,item3Select,musicSelect,battleValueSelect,mugshotSelect,poolRulesSelect,partySizeSelect].forEach((node)=>node.addEventListener('change',()=>{if(node===picSelect)renderTrainerPicture(picSelect.value);if(node===poolRulesSelect||node===partySizeSelect)currentData.has_party_pool=!!(poolRulesSelect.value||partySizeSelect.value);setDirty(true);}));nameInput.addEventListener('input',()=>setDirty(true));}
+function setupTabs(){document.querySelectorAll('.tab-btn').forEach((btn)=>btn.addEventListener('click',()=>{document.querySelectorAll('.tab-btn').forEach((b)=>b.classList.remove('active'));document.querySelectorAll('.panel').forEach((p)=>p.classList.remove('active'));btn.classList.add('active');el(`panel-${btn.dataset.tab}`).classList.add('active');}));}
+function setupTrainerSelect(){trainerSelect.addEventListener('change',async()=>{const nextId=trainerSelect.value;if(!dirty){await loadTrainer(nextId);return;}pendingTrainerId=nextId;modal.classList.add('open');});el('cancelSwitchBtn').addEventListener('click',()=>{modal.classList.remove('open');trainerSelect.value=currentTrainerId;pendingTrainerId=null;});el('discardSwitchBtn').addEventListener('click',async()=>{modal.classList.remove('open');if(pendingTrainerId)await loadTrainer(pendingTrainerId);pendingTrainerId=null;});el('saveSwitchBtn').addEventListener('click',async()=>{const ok=await saveTrainer();modal.classList.remove('open');if(ok&&pendingTrainerId)await loadTrainer(pendingTrainerId);pendingTrainerId=null;});}
+async function init(){const res=await fetch('/api/bootstrap');bootstrap=await res.json();for(const trainer of bootstrap.trainers||[])trainerSelect.appendChild(option(trainer.display_id,trainer.display_id));populateStaticOptions();bindGeneralInputs();setupTabs();setupTrainerSelect();saveBtn.addEventListener('click',saveTrainer);const first=bootstrap.trainers?.length?bootstrap.trainers[0].display_id:'';if(first)await loadTrainer(first);}window.addEventListener('beforeunload',(event)=>{if(!dirty)return;event.preventDefault();event.returnValue='';});init().catch((err)=>{statusText.textContent=String(err);statusText.className='status';console.error(err);});
+</script>
+</body>
+</html>
+"""
+
+
+@dataclass(slots=True)
+class TrainerSection:
+    trainer_id: str
+    display_id: str
+    metadata: dict[str, str]
+    metadata_order: list[str]
+    pokemon_blocks: list[str]
+    location: str | None = None
+
+
+class TrainerEditorError(RuntimeError):
+    pass
+
+
+# -----------------------------
+# Reference-option extraction
+# -----------------------------
+
+def _human_label(symbol: str, prefix: str = '') -> str:
+    text = str(symbol or '').strip()
+    if prefix and text.startswith(prefix):
+        text = text[len(prefix):]
+    text = text.replace('_', ' ')
+    text = re.sub(r'\s+', ' ', text).strip()
+    return title_case_words(text) or text
+
+
+
+def _find_enum_block(text: str, enum_name: str) -> str | None:
+    pattern = re.compile(rf'enum\s+(?:__attribute__\s*\(\([^)]*\)\)\s+)?{re.escape(enum_name)}\s*\{{', re.S)
+    match = pattern.search(text)
+    if not match:
+        pattern = re.compile(rf'enum\s+{re.escape(enum_name)}\s+(?:__attribute__\s*\(\([^)]*\)\)\s*)?\{{', re.S)
+        match = pattern.search(text)
+    if not match:
+        return None
+    brace_start = text.find('{', match.start())
+    if brace_start < 0:
+        return None
+    brace_end = find_matching(text, brace_start, '{', '}')
+    return text[brace_start + 1:brace_end]
+
+
+
+def _parse_enum_symbols(text: str, enum_name: str, *, stop_symbol: str | None = None) -> list[str]:
+    block = _find_enum_block(strip_comments(text), enum_name)
+    if not block:
+        return []
+    out: list[str] = []
+    current = []
+    depth = 0
+    in_string = False
+    prev = ''
+    for ch in block:
+        if ch == '"' and prev != '\\':
+            in_string = not in_string
+        elif not in_string:
+            if ch in '({[':
+                depth += 1
+            elif ch in ')}]':
+                depth = max(0, depth - 1)
+            elif ch == ',' and depth == 0:
+                item = ''.join(current).strip()
+                current = []
+                if item:
+                    name = item.split('=', 1)[0].strip()
+                    if re.match(r'^[A-Z0-9_]+$', name):
+                        if stop_symbol and name == stop_symbol:
+                            break
+                        out.append(name)
+                prev = ch
+                continue
+        current.append(ch)
+        prev = ch
+    if current:
+        item = ''.join(current).strip()
+        name = item.split('=', 1)[0].strip()
+        if re.match(r'^[A-Z0-9_]+$', name) and (not stop_symbol or name != stop_symbol):
+            out.append(name)
+    return out
+
+
+
+def _parse_define_symbols(text: str, prefix: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in strip_comments(text).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith('#define '):
+            continue
+        parts = stripped.split(None, 2)
+        if len(parts) < 2:
+            continue
+        name = parts[1].strip()
+        if '(' in name:
+            continue
+        if not name.startswith(prefix):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+
+def _parse_prefixed_symbols_anywhere(text: str, prefix: str) -> list[str]:
+    cleaned = strip_comments(text)
+    matches = re.findall(rf'\b({re.escape(prefix)}[A-Z0-9_]+)\b', cleaned)
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in matches:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+
+def _read_project_header(project_dir: Path, relative_path: str) -> str:
+    path = project_dir / relative_path
+    if not path.exists():
+        return ''
+    return read_project_text(path, roots=project_include_roots(project_dir), defines={})
+
+
+
+def load_trainer_editor_references(project_dir: Path, model: Any) -> dict[str, Any]:
+    trainers_h = _read_project_header(project_dir, 'include/constants/trainers.h')
+    battle_transition_h = _read_project_header(project_dir, 'include/battle_transition.h')
+    battle_h = _read_project_header(project_dir, 'include/constants/battle.h')
+    battle_ai_h = _read_project_header(project_dir, 'include/constants/battle_ai.h')
+    pools_h = _read_project_header(project_dir, 'include/trainer_pools.h')
+
+    trainer_pic_symbols = _parse_enum_symbols(trainers_h, 'TrainerPicID', stop_symbol='TRAINER_PIC_FRONT_COUNT')
+    trainer_pics = [_human_label(x, 'TRAINER_PIC_') for x in trainer_pic_symbols]
+    trainer_classes = [_human_label(x, 'TRAINER_CLASS_') for x in _parse_enum_symbols(trainers_h, 'TrainerClassID', stop_symbol='TRAINER_CLASS_COUNT')]
+    encounter_music = [_human_label(x, 'TRAINER_ENCOUNTER_MUSIC_') for x in _parse_define_symbols(trainers_h, 'TRAINER_ENCOUNTER_MUSIC_')]
+    mugshot_colors = [_human_label(x, 'MUGSHOT_COLOR_') for x in _parse_enum_symbols(battle_transition_h, 'MugshotColor') if x != 'MUGSHOT_COLOR_NONE']
+    starting_status_symbols = [x for x in _parse_prefixed_symbols_anywhere(battle_h, 'STARTING_STATUS_') if x != 'STARTING_STATUS_DEFINITIONS']
+    starting_statuses = [_human_label(x, 'STARTING_STATUS_') for x in starting_status_symbols]
+    pool_rules = [_human_label(x, 'POOL_RULESET_') for x in _parse_enum_symbols(pools_h, 'PoolRulesets') if x != 'POOL_RULESET_COUNT']
+    ai_flags = [_human_label(x, 'AI_FLAG_') for x in _parse_define_symbols(battle_ai_h, 'AI_FLAG_')]
+
+    species = sorted({rec.name for rec in getattr(model, 'species', {}).values() if getattr(rec, 'name', None)})
+    moves = sorted({rec.name for rec in getattr(model, 'moves', {}).values() if getattr(rec, 'name', None)})
+    abilities = sorted({rec.name for rec in getattr(model, 'abilities', {}).values() if getattr(rec, 'name', None)})
+    items = sorted({rec.name for rec in getattr(model, 'items', {}).values() if getattr(rec, 'name', None)})
+    site_generator = SiteGenerator(config=SiteConfig(project_dir=project_dir, dist_dir=project_dir / '.trainer-editor-temp', site_title='temp'), model=model, env=None)
+
+    return {
+        'trainer_pics': sorted(dict.fromkeys(x for x in trainer_pics if x)),
+        'trainer_classes': sorted(dict.fromkeys(x for x in trainer_classes if x)),
+        'genders': ['Male', 'Female'],
+        'items': items,
+        'encounter_music': sorted(dict.fromkeys(x for x in encounter_music if x)),
+        'double_battle': ['No', 'Yes'],
+        'battle_type_options': ['Singles', 'Doubles'],
+        'mugshot_colors': sorted(dict.fromkeys(x for x in mugshot_colors if x)),
+        'starting_statuses': sorted(dict.fromkeys(x for x in starting_statuses if x)),
+        'pool_rules': sorted(dict.fromkeys(x for x in pool_rules if x and x != 'None')),
+        'party_sizes': [str(i) for i in range(1, 7)],
+        'ai_flags': sorted(dict.fromkeys(x for x in ai_flags if x)),
+        'species': species,
+        'moves': moves,
+        'abilities': abilities,
+        'pokeballs': _parse_pokeballs(model),
+        'natures': _parse_natures(project_dir),
+        'pool_tags': _parse_pool_tags(project_dir),
+        'species_details': _species_details(site_generator, model),
+        'any_moves': bool(getattr(getattr(model, 'metadata', {}), 'get', lambda _k, _d=None: None)('trainer_editor_any_moves', False)) if False else False,
+    }
+
+
+# -----------------------------
+# trainers.party IO helpers
+# -----------------------------
+
+def load_trainer_sections(project_dir: Path) -> list[TrainerSection]:
+    trainers_path = project_dir / 'src/data/trainers.party'
+    if not trainers_path.exists():
+        return []
+    text = strip_comments(trainers_path.read_text(encoding='utf-8', errors='ignore'))
+    location_index = build_trainer_location_index(project_dir)
+    sections: list[TrainerSection] = []
+    for trainer_id, body in _split_sections(text):
+        chunks = re.split(r'\n\s*\n+', body.strip()) if body.strip() else []
+        metadata_lines: list[str] = []
+        pokemon_blocks: list[str] = []
+        metadata_order: list[str] = []
+        seen_pokemon = False
+        for chunk in chunks:
+            lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+            if not lines:
+                continue
+            first = lines[0]
+            if not seen_pokemon and ':' in first:
+                key = _normalize_trainer_field_key(first.split(':', 1)[0].strip())
+                if key in KNOWN_TRAINER_FIELDS:
+                    metadata_lines.extend(lines)
+                    for line in lines:
+                        if ':' in line:
+                            ordered_key = _normalize_trainer_field_key(line.split(':', 1)[0].strip())
+                            if ordered_key not in metadata_order:
+                                metadata_order.append(ordered_key)
+                    continue
+            seen_pokemon = True
+            pokemon_blocks.append(chunk.strip())
+        metadata = _parse_metadata_lines_preserving_values(metadata_lines)
+        sections.append(TrainerSection(
+            trainer_id=trainer_id,
+            display_id=trainer_id.replace('TRAINER_', '', 1),
+            metadata=metadata,
+            metadata_order=metadata_order,
+            pokemon_blocks=pokemon_blocks,
+            location=location_index.get(trainer_id),
+        ))
+    return sections
+
+
+
+def _normalize_slash_values(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in re.split(r'\s*/\s*', str(value)) if part.strip() and part.strip().lower() != 'none']
+
+
+
+def trainer_section_to_form_state(section: TrainerSection) -> dict[str, Any]:
+    metadata = dict(section.metadata)
+    items = _normalize_slash_values(metadata.get('Items'))
+    statuses = _normalize_slash_values(metadata.get('Starting Status'))
+    ai_flags = _normalize_slash_values(metadata.get('AI'))
+    mugshot = title_case_words(metadata.get('Mugshot')) or metadata.get('Mugshot') or 'None'
+    has_party_pool = bool((metadata.get('Pool Rules') or '').strip() or (metadata.get('Party Size') or '').strip() or (metadata.get('Party Pool') or '').strip())
+    uses_battle_type = 'Battle Type' in metadata and 'Double Battle' not in metadata
+    battle_field = 'Battle Type' if uses_battle_type else 'Double Battle'
+    if uses_battle_type:
+        battle_value = title_case_words(metadata.get('Battle Type')) or metadata.get('Battle Type') or 'Singles'
+        if battle_value not in {'Singles', 'Doubles'}:
+            battle_value = 'Singles'
+    else:
+        lowered = (metadata.get('Double Battle') or '').strip().lower()
+        battle_value = 'Yes' if lowered == 'yes' else 'No'
+    pool_rules_value = (metadata.get('Pool Rules') or '').strip()
+    if pool_rules_value.startswith('POOL_RULESET_'):
+        pool_rules_value = _human_label(pool_rules_value, 'POOL_RULESET_')
+    elif pool_rules_value.startswith('Pool Ruleset '):
+        pool_rules_value = pool_rules_value[len('Pool Ruleset '):].strip()
+    return {
+        'trainer_id': section.trainer_id,
+        'display_id': section.display_id,
+        'name': metadata.get('Name') or section.display_id,
+        'pic': metadata.get('Pic') or '',
+        'class_name': metadata.get('Class') or '',
+        'gender': metadata.get('Gender') or '',
+        'items': items[:3] + [''] * max(0, 3 - len(items[:3])),
+        'music': metadata.get('Music') or '',
+        'battle_field': battle_field,
+        'battle_value': battle_value,
+        'location': section.location or '',
+        'mugshot': mugshot if mugshot != 'None' else 'None',
+        'starting_statuses': statuses,
+        'pool_rules': pool_rules_value or 'None',
+        'party_size': (metadata.get('Party Size') or '').strip(),
+        'has_party_pool': has_party_pool,
+        'ai_flags': ai_flags,
+        'pokemon': [_parse_pokemon_block_editor(block) for block in section.pokemon_blocks if str(block).strip()],
+    }
+
+
+
+def apply_form_state_to_metadata(section: TrainerSection, state: dict[str, Any]) -> None:
+    metadata = dict(section.metadata)
+
+    def set_field(key: str, value: str | None) -> None:
+        text = (value or '').strip()
+        if text and text.lower() != 'none':
+            metadata[key] = text
+        else:
+            metadata.pop(key, None)
+
+    set_field('Name', state.get('name'))
+    set_field('Pic', state.get('pic'))
+    set_field('Class', state.get('class_name'))
+    set_field('Gender', state.get('gender'))
+    item_values = [item for item in (state.get('items') or []) if item and str(item).strip() and str(item).strip().lower() != 'none']
+    set_field('Items', ' / '.join(item_values))
+    set_field('Music', state.get('music'))
+    battle_field = str(state.get('battle_field') or ('Battle Type' if 'Battle Type' in metadata and 'Double Battle' not in metadata else 'Double Battle')).strip()
+    battle_value = str(state.get('battle_value') or '').strip()
+    if battle_field == 'Battle Type':
+        normalized_battle = 'Doubles' if battle_value.lower() in {'doubles', 'yes'} else 'Singles'
+        set_field('Battle Type', normalized_battle)
+        metadata.pop('Double Battle', None)
+    else:
+        normalized_double = 'Yes' if battle_value.lower() in {'yes', 'doubles'} else 'No'
+        set_field('Double Battle', normalized_double)
+        metadata.pop('Battle Type', None)
+    mugshot = state.get('mugshot')
+    set_field('Mugshot', None if not mugshot or str(mugshot).strip().lower() == 'none' else str(mugshot))
+    status_values = [item for item in (state.get('starting_statuses') or []) if item and str(item).strip()]
+    set_field('Starting Status', ' / '.join(status_values))
+    pool_rules = state.get('pool_rules')
+    party_size = state.get('party_size')
+    if pool_rules and str(pool_rules).strip().lower() != 'none':
+        set_field('Pool Rules', str(pool_rules))
+        set_field('Party Size', str(party_size) if party_size else None)
+    else:
+        set_field('Pool Rules', None)
+        set_field('Party Size', None)
+    ai_values = [item for item in (state.get('ai_flags') or []) if item and str(item).strip()]
+    set_field('AI', ' / '.join(ai_values))
+    pokemon_limit = 256 if (state.get('pool_rules') or state.get('party_size')) else 6
+    mons = []
+    for mon in (state.get('pokemon') or [])[:pokemon_limit]:
+        rendered = _serialize_pokemon_block(mon)
+        if rendered:
+            mons.append(rendered)
+    section.pokemon_blocks = mons
+    section.metadata = metadata
+
+
+
+def serialize_trainer_sections(sections: list[TrainerSection]) -> str:
+    blocks: list[str] = []
+    for section in sections:
+        lines = [f'=== {section.trainer_id} ===']
+        present = set(section.metadata)
+        ordered_keys = []
+        for key in section.metadata_order + CONTROLLED_FIELD_ORDER:
+            if key in present and key not in ordered_keys:
+                ordered_keys.append(key)
+        for key in section.metadata:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+        for key in ordered_keys:
+            value = (section.metadata.get(key) or '').strip()
+            if value:
+                lines.append(f'{key}: {value}')
+        if section.pokemon_blocks:
+            lines.append('')
+            lines.append('\n\n'.join(block.strip() for block in section.pokemon_blocks if block.strip()))
+        blocks.append('\n'.join(lines).rstrip())
+    return '\n\n'.join(blocks).rstrip() + '\n'
+
+
+
+def _read_trainers_party_preamble(project_dir: Path) -> str:
+    trainers_path = project_dir / 'src/data/trainers.party'
+    if not trainers_path.exists():
+        return ''
+    text = trainers_path.read_text(encoding='utf-8', errors='ignore')
+    match = re.search(r'(?m)^===\s+TRAINER_[A-Z0-9_]+\s+===$', text)
+    if not match:
+        return ''
+    return text[:match.start()]
+
+
+def save_trainer_sections(project_dir: Path, sections: list[TrainerSection]) -> None:
+    trainers_path = project_dir / 'src/data/trainers.party'
+    preamble = _read_trainers_party_preamble(project_dir)
+    body = serialize_trainer_sections(sections)
+    if preamble:
+        preamble = preamble.rstrip('\n') + '\n\n'
+    trainers_path.write_text(preamble + body, encoding='utf-8')
+
+
+# -----------------------------
+# Browser app
+# -----------------------------
+
+class _TrainerEditorBackend:
+    def __init__(self, config: SiteConfig, model: Any) -> None:
+        self.config = config
+        self.model = model
+        self.references = load_trainer_editor_references(config.project_dir, model)
+        self.references['any_moves'] = bool(getattr(config, 'trainer_gui_any_moves', False))
+        self.sections = load_trainer_sections(config.project_dir)
+        if not self.sections:
+            raise TrainerEditorError('No trainers were found in src/data/trainers.party.')
+        self.references['trainer_pics'] = sorted(dict.fromkeys([
+            *self.references.get('trainer_pics', []),
+            *[section.metadata.get('Pic', '').strip() for section in self.sections if section.metadata.get('Pic', '').strip()],
+        ]))
+        self.section_by_display = {section.display_id: section for section in self.sections}
+        self.picture_index = build_trainer_picture_index(config.project_dir)
+        self.site_generator = SiteGenerator(config=config, model=model, env=None)
+
+    def bootstrap_payload(self) -> dict[str, Any]:
+        sorted_sections = sorted(self.sections, key=lambda s: (s.display_id.casefold(), s.trainer_id.casefold()))
+        return {
+            'trainers': [
+                {'display_id': section.display_id, 'trainer_id': section.trainer_id, 'location': section.location or ''}
+                for section in sorted_sections
+            ],
+            'references': self.references,
+        }
+
+    def get_trainer_state(self, display_id: str) -> dict[str, Any]:
+        section = self.section_by_display.get(display_id)
+        if section is None:
+            raise KeyError(display_id)
+        return trainer_section_to_form_state(section)
+
+    def save_trainer_state(self, display_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        section = self.section_by_display.get(display_id)
+        if section is None:
+            raise KeyError(display_id)
+        apply_form_state_to_metadata(section, state)
+        save_trainer_sections(self.config.project_dir, self.sections)
+        return trainer_section_to_form_state(section)
+
+    def trainer_picture_response(self, pic_value: str | None) -> tuple[bytes, str] | None:
+        rel = resolve_trainer_picture_path(pic_value, self.picture_index)
+        if not rel:
+            return None
+        source = self.config.project_dir / rel
+        if not source.exists() or not source.is_file():
+            return None
+        mime = mimetypes.guess_type(source.name)[0] or 'application/octet-stream'
+        return source.read_bytes(), mime
+
+    def pokemon_sprite_response(self, species_name: str | None, shiny: str | None) -> tuple[bytes, str] | None:
+        rec = _resolve_species_record(self.model, species_name)
+        if rec is None:
+            return None
+        graphics = _display_graphics(self.site_generator, rec)
+        source = _resolve_species_sprite_source(self.config.project_dir, rec, graphics, self.model)
+        if source is None:
+            return None
+        try:
+            Image = _load_pillow_image_module()
+            with Image.open(source) as opened:
+                img = opened.copy()
+            if str(shiny or '').strip().lower() == 'yes':
+                palette_rel = None
+                for key in ('shinyPalette', 'shinyPaletteFemale'):
+                    if graphics.get(key):
+                        palette_rel = graphics.get(key)
+                        break
+                if palette_rel:
+                    palette_path = self.config.project_dir / str(palette_rel).replace('\\', '/')
+                    img = self.site_generator._apply_palette_to_png(img, palette_path, source)
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            return buffer.getvalue(), 'image/png'
+        except Exception:
+            mime = mimetypes.guess_type(source.name)[0] or 'application/octet-stream'
+            return source.read_bytes(), mime
+
+
+
+class _TrainerEditorHandler(BaseHTTPRequestHandler):
+    server: '_TrainerEditorServer'
+
+    def log_message(self, _format: str, *_args: Any) -> None:  # pragma: no cover - noisy runtime logging
+        return
+
+    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, html: str, status: int = 200) -> None:
+        body = html.encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_bytes(self, payload: bytes, mime: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        backend = self.server.backend
+        if parsed.path == '/':
+            self._send_html(BROWSER_APP_HTML)
+            return
+        if parsed.path == '/api/bootstrap':
+            self._send_json(backend.bootstrap_payload())
+            return
+        if parsed.path == '/api/trainer':
+            display_id = parse_qs(parsed.query).get('trainer_id', [''])[0]
+            try:
+                self._send_json(backend.get_trainer_state(display_id))
+            except KeyError:
+                self._send_json({'ok': False, 'error': f'Unknown trainer id: {display_id}'}, status=404)
+            return
+        if parsed.path == '/api/trainer-picture':
+            pic = parse_qs(parsed.query).get('pic', [''])[0]
+            payload = backend.trainer_picture_response(pic)
+            if payload is None:
+                self.send_error(HTTPStatus.NOT_FOUND, 'Trainer picture not found')
+                return
+            body, mime = payload
+            self._send_bytes(body, mime)
+            return
+        if parsed.path == '/api/pokemon-sprite':
+            species = parse_qs(parsed.query).get('species', [''])[0]
+            shiny = parse_qs(parsed.query).get('shiny', [''])[0]
+            payload = backend.pokemon_sprite_response(species, shiny)
+            if payload is None:
+                self.send_error(HTTPStatus.NOT_FOUND, 'Pokémon sprite not found')
+                return
+            body, mime = payload
+            self._send_bytes(body, mime)
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, 'Not found')
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != '/api/trainer':
+            self.send_error(HTTPStatus.NOT_FOUND, 'Not found')
+            return
+        length = int(self.headers.get('Content-Length', '0') or '0')
+        raw_body = self.rfile.read(length)
+        try:
+            body = json.loads(raw_body.decode('utf-8')) if raw_body else {}
+        except json.JSONDecodeError:
+            self._send_json({'ok': False, 'error': 'Invalid JSON body'}, status=400)
+            return
+        display_id = str(body.get('trainer_id') or '')
+        state = body.get('state') or {}
+        try:
+            saved = self.server.backend.save_trainer_state(display_id, state)
+        except KeyError:
+            self._send_json({'ok': False, 'error': f'Unknown trainer id: {display_id}'}, status=404)
+            return
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+            return
+        self._send_json({'ok': True, 'display_id': saved['display_id'], 'trainer_id': saved['trainer_id']})
+
+
+class _TrainerEditorServer(ThreadingHTTPServer):
+    def __init__(self, server_address: tuple[str, int], backend: _TrainerEditorBackend) -> None:
+        super().__init__(server_address, _TrainerEditorHandler)
+        self.backend = backend
+
+
+
+def _open_browser_best_effort(url: str) -> bool:
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception:
+        pass
+
+    if sys.platform.startswith('win'):
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        except Exception:
+            pass
+
+    platform_release = os.uname().release.lower() if hasattr(os, 'uname') else ''
+    if 'microsoft' in platform_release:
+        for cmd in (['wslview', url], ['cmd.exe', '/c', 'start', '', url]):
+            exe = cmd[0]
+            if shutil.which(exe):
+                try:
+                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True
+                except Exception:
+                    pass
+
+    for cmd in (['xdg-open', url], ['open', url], ['brave-browser', url], ['brave', url], ['google-chrome', url], ['chromium', url]):
+        exe = cmd[0]
+        if shutil.which(exe):
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                pass
+    return False
+
+
+
+def launch_trainer_editor(config: SiteConfig, model: Any) -> None:
+    backend = _TrainerEditorBackend(config=config, model=model)
+    server = _TrainerEditorServer(('127.0.0.1', 0), backend)
+    host, port = server.server_address
+    url = f'http://{host}:{port}/'
+    print(f'[obstagoon] Trainer editor available at {url}')
+    if not _open_browser_best_effort(url):
+        print('[obstagoon] Could not auto-open a browser. Open the URL above manually.')
+    print('[obstagoon] Press Ctrl+C to stop the trainer editor server.')
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        print('\n[obstagoon] Stopping trainer editor server...')
+    finally:
+        server.shutdown()
+        server.server_close()

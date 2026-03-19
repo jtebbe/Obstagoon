@@ -23,6 +23,8 @@ def main() -> int:
     parser.add_argument("--showdown-export", action="store_true", help="Generate Pokémon Showdown server/client fork payloads after building the site")
     parser.add_argument("--showdown-export-dir", default=None, help="Directory for generated Pokémon Showdown export payloads")
     parser.add_argument("--showdown-canonical-pokedex", default=None, help="Path to an upstream Pokémon Showdown data/pokedex.ts to preserve canonical entry names/forms/order")
+    parser.add_argument("--trainer-editor", action="store_true", help="Open the trainer editor GUI after any requested documentation/showdown work completes")
+    parser.add_argument("--trainer-gui-any-moves", action="store_true", help="Allow the trainer editor move dropdowns to use the full move list instead of each species's teachable learnset")
     args = parser.parse_args()
 
     project_dir = Path(args.project_dir).resolve()
@@ -31,22 +33,26 @@ def main() -> int:
     cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else None
     showdown_export_dir = Path(args.showdown_export_dir).resolve() if args.showdown_export_dir else None
     showdown_canonical_pokedex_path = Path(args.showdown_canonical_pokedex).resolve() if args.showdown_canonical_pokedex else None
-    documentation = args.documentation or not args.showdown_export
+    documentation = bool(args.documentation or args.trainer_editor)
+    copy_assets = bool(args.copy_assets or args.trainer_editor)
+    pillow_transparency = bool(args.pillow_transparency or args.trainer_editor)
     config = SiteConfig(
         project_dir=project_dir,
         dist_dir=dist_dir,
         site_title=args.title,
         site_url=args.site_url,
-        copy_assets=args.copy_assets,
+        copy_assets=copy_assets,
         verbose=args.verbose,
         wild_encounters_path=wild_encounters_path,
         cache_dir=cache_dir,
-        pillow_transparency=args.pillow_transparency,
+        pillow_transparency=pillow_transparency,
         hoenn_dex=args.hoenn_dex,
         documentation=documentation,
         showdown_export=args.showdown_export,
         showdown_export_dir=showdown_export_dir,
         showdown_canonical_pokedex_path=showdown_canonical_pokedex_path,
+        trainer_editor=args.trainer_editor,
+        trainer_gui_any_moves=args.trainer_gui_any_moves,
     )
     build_site(config)
     return 0

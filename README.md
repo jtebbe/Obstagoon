@@ -60,17 +60,62 @@ It is still a porting project rather than a guaranteed drop-in mirror of every e
 
 ```bash
 pip install -r requirements.txt
-
-# optional, only needed for --pillow-transparency
 pip install Pillow
 ```
+
+Pillow is required when you use the Trainer Editor, because `--trainer-editor` now automatically enables documentation asset generation and transparency/sprite processing for the browser previews.
 
 ## Usage
 
 ```bash
-python -m obstagoon /path/to/pokeemerald-expansion --title "My Hack Dex"
+python -m obstagoon /path/to/pokeemerald-expansion --title "My Hack Dex" --documentation
 ```
 
+
+
+## CLI flags at a glance
+
+Obstagoon currently supports these top-level flags:
+
+- `--documentation` — build the HTML documentation site
+- `--showdown-export` — generate the Showdown export payload
+- `--trainer-editor` — build the documentation outputs needed by the Trainer Editor, then launch the browser editor for `src/data/trainers.party`
+- `--copy-assets` — copy web-ready assets into the generated site output
+- `--pillow-transparency` — use Pillow to crop `anim_front.png` / `front_anim.png` to the top half and make the top-left background color transparent for copied Pokémon sprites
+- `--wild-encounters-json PATH` — ingest a generated wild encounters JSON export instead of relying only on source parsing
+- `--title TEXT` — set the generated site title
+- `--dist-dir PATH` — choose the output directory
+- `--site-url URL` — set the site base URL used in generated output
+- `--verbose` — print step-by-step build progress
+
+Example:
+
+```bash
+python -m obstagoon /path/to/project \
+  --documentation \
+  --showdown-export \
+  --copy-assets \
+  --pillow-transparency \
+  --title "My Hack Dex"
+```
+
+### Trainer Editor flag behavior
+
+When `--trainer-editor` is used, Obstagoon now automatically enables the flags and behavior the browser editor depends on:
+
+- `--documentation`
+- `--copy-assets`
+- `--pillow-transparency`
+
+This means Trainer Editor users should have Pillow installed. The editor preview sprites are sourced from the generated documentation outputs so that form handling and shiny previews match the documentation pipeline.
+
+Example:
+
+```bash
+python -m obstagoon /path/to/project --trainer-editor
+```
+
+That single command now builds the documentation outputs required for previews and then launches the Trainer Editor.
 
 ## Documentation generation
 
@@ -103,6 +148,33 @@ python -m obstagoon /path/to/project \
 ```
 
 `--pillow-transparency` is optional. Without it, Obstagoon copies assets as-is and does not require Pillow.
+
+
+## Trainer Editor (`--trainer-editor`)
+
+The Trainer Editor currently focuses on trainer-level metadata in `src/data/trainers.party` and runs in your browser instead of requiring Tkinter or another desktop GUI toolkit.
+
+Current browser-editor support includes:
+
+- trainer selection by `TRAINER_*` section id, displayed without the `TRAINER_` prefix and annotated with in-game location when available
+- trainer picture preview using the trainer's current `Pic` value and the same located trainer front pics Obstagoon already resolves for TrainerDex pages
+- dropdown editing for trainer class, gender, music, battle type / double battle (depending on trainer format), mugshot color, pool rules, and party size
+- up to 3 trainer items with `None` meaning the field is omitted on save
+- checkbox editing for starting statuses in their own dedicated tab
+- checkbox editing for AI flags
+- a dedicated Pokémon tab with form-aware sprite previews, shiny previews, stats, abilities, natures, moves, tera type, balls, IVs, EVs, and tags
+- dynamic Pokémon entry counts: only the trainer's current number of Pokémon are rendered, with add buttons up to 6 entries for standard trainers or 256 for pool trainers
+- save / discard / cancel prompts when switching away from a trainer with unsaved changes
+
+Current save behavior:
+
+- empty / `None` dropdown values are omitted from the trainer's metadata block
+- empty Pokémon entries are ignored and not written
+- pool-related fields are only written when pool rules are set
+- Pokémon previews are sourced from the generated documentation outputs so form handling matches the documentation pipeline
+
+
+When auto-opening the browser, Obstagoon first tries Python's normal browser hook, then falls back to common platform launchers such as `wslview`, `cmd.exe /c start`, `xdg-open`, `open`, and common Chromium / Brave executable names. Some WSL or headless setups may still require opening the printed localhost URL manually.
 
 ## Output
 

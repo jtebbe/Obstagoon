@@ -7,13 +7,14 @@ from .extract.expansion_project import ExpansionProject
 from .model.builder import build_model
 from .generate.site import SiteGenerator
 from .generate.showdown import generate_showdown_export
+from .trainer_editor import launch_trainer_editor
 
 
 def build_site(config: SiteConfig) -> None:
     config.ensure()
     project = ExpansionProject(config.project_dir, verbose=config.verbose, wild_encounters_path=config.wild_encounters_path, cache_dir=config.cache_dir, hoenn_dex=config.hoenn_dex)
     model = build_model(project)
-    if config.documentation or not config.showdown_export:
+    if config.documentation:
         env = Environment(
             loader=FileSystemLoader(str((__import__(__name__.split('.')[0]).__path__[0])) + "/templates"),
             autoescape=select_autoescape(["html", "xml"]),
@@ -24,3 +25,5 @@ def build_site(config: SiteConfig) -> None:
         generator.run()
     if config.showdown_export:
         generate_showdown_export(config=config, model=model)
+    if config.trainer_editor:
+        launch_trainer_editor(config=config, model=model)

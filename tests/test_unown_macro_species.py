@@ -97,7 +97,7 @@ const struct SpeciesInfo gSpeciesInfo[] = {
     assert 'SPECIES_UNOWN_B' in model.species['SPECIES_UNOWN_A'].forms
 
     dist = tmp_path / 'dist'
-    build_site(SiteConfig(project_dir=project, dist_dir=dist, site_title='test'))
+    build_site(SiteConfig(project_dir=project, dist_dir=dist, site_title='test', documentation=True))
     pokedex = (dist / 'pokedex' / 'index.html').read_text(encoding='utf-8')
     species_page = (dist / 'pokedex' / 'unown-a.html').read_text(encoding='utf-8')
     assert 'Unown' in pokedex

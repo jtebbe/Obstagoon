@@ -251,7 +251,7 @@ def parse_trainers(project_dir: Path, defines: dict[str, int] | None = None) -> 
             'battle_type': _resolve_battle_type(metadata),
             'has_party_pool': has_party_pool,
             'party_size': party_size_value,
-            'pool_rules': title_case_words(metadata.get('Pool Rules')) or metadata.get('Pool Rules'),
+            'pool_rules': (title_case_words((metadata.get('Pool Rules') or '').replace('POOL_RULESET_', '').replace('Pool Ruleset ', '')) or (metadata.get('Pool Rules') or '').replace('POOL_RULESET_', '').replace('Pool Ruleset ', '') or metadata.get('Pool Rules')) ,
             'pokemon': pokemon,
             'raw_metadata': metadata,
         })

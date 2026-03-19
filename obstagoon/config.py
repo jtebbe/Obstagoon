@@ -20,6 +20,8 @@ class SiteConfig:
     showdown_export: bool = False
     showdown_export_dir: Path | None = None
     showdown_canonical_pokedex_path: Path | None = None
+    trainer_editor: bool = False
+    trainer_gui_any_moves: bool = False
 
     def ensure(self) -> None:
         self.dist_dir.mkdir(parents=True, exist_ok=True)

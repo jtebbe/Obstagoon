@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import mimetypes
 import re
 import shutil
 import struct
@@ -187,6 +189,226 @@ class SiteGenerator:
         if project_candidate.exists() and project_candidate.is_file():
             return candidate
         return source
+
+
+    def trainer_editor_species_display_name(self, species: SpeciesRecord) -> str:
+        species_id = str(getattr(species, 'species_id', '') or '').strip()
+        label = humanize_symbol(species_id.replace('SPECIES_', '')) if species_id else ''
+        label = str(label or '').strip()
+        if label:
+            return label.replace(' ', '-')
+        name = str(getattr(species, 'name', '') or '').strip()
+        return name.replace(' ', '-') if name else 'Unknown'
+
+    def _normalize_trainer_editor_palette_rel(self, palette_rel: str | None) -> str | None:
+        if not palette_rel:
+            return None
+        rel = Path(str(palette_rel).replace('\\', '/'))
+        suffix = rel.suffix.lower()
+        if suffix == '.gbapal':
+            pal_rel = rel.with_suffix('.pal')
+            pal_candidate = self.config.project_dir / pal_rel
+            if pal_candidate.exists() and pal_candidate.is_file():
+                return pal_rel.as_posix()
+            return None
+        if suffix != '.pal':
+            return None
+        return rel.as_posix()
+
+    def _fallback_shiny_palette_rel(self, normal_palette_rel: str | None) -> str | None:
+        normalized = self._normalize_trainer_editor_palette_rel(normal_palette_rel)
+        if not normalized:
+            return None
+        normal_path = Path(normalized)
+        candidates: list[Path] = []
+        parent_name = normal_path.parent.name.lower()
+        stem = normal_path.stem.lower()
+        if stem in {'normal', 'palette'}:
+            candidates.append(normal_path.with_name('shiny.pal'))
+        if parent_name:
+            candidates.append(normal_path.with_name(f"{parent_name}_shiny.pal"))
+        candidates.append(normal_path.with_name(f"{normal_path.stem}_shiny.pal"))
+        for candidate_rel in candidates:
+            candidate = self.config.project_dir / candidate_rel
+            if candidate.exists() and candidate.is_file() and candidate.suffix.lower() == '.pal':
+                return candidate_rel.as_posix()
+        return None
+
+    def _apply_palette_to_png_with_source_palette(self, image: 'Image.Image', palette_path: Path | None, source_path: Path | None = None, source_palette_path: Path | None = None) -> 'Image.Image':
+        if palette_path is None or not palette_path.exists() or not palette_path.is_file():
+            return image
+        target_palette = self._load_binary_palette(palette_path)
+        if not target_palette:
+            return image
+        resolved_source_palette = source_palette_path
+        if resolved_source_palette is None and source_path is not None:
+            resolved_source_palette = self._find_source_palette_for_sprite(source_path, palette_path)
+        source_palette = self._load_binary_palette(resolved_source_palette) if resolved_source_palette else None
+        if image.mode == 'P':
+            pal_image = image.copy()
+            current_palette = self._padded_palette(list(pal_image.getpalette() or []))
+            replacement = self._padded_palette(target_palette)
+            replace_len = min(len(target_palette), len(current_palette))
+            current_palette[:replace_len] = replacement[:replace_len]
+            pal_image.putpalette(current_palette[:768])
+            transparency = pal_image.info.get('transparency', image.info.get('transparency'))
+            if transparency is not None:
+                pal_image.info['transparency'] = transparency
+            return pal_image
+        if source_palette:
+            return self._recolor_rgba_with_palettes(image, source_palette, target_palette)
+        return image
+
+    def _trainer_editor_species_asset_slugs(self, species: SpeciesRecord) -> list[str]:
+        slugs: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str | None) -> None:
+            if not value:
+                return
+            cleaned = value.replace('SPECIES_', '').strip().lower()
+            cleaned = cleaned.replace('♀', 'f').replace('♂', 'm')
+            cleaned = cleaned.replace("'", '')
+            cleaned = re.sub(r'[^a-z0-9]+', '_', cleaned).strip('_')
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                slugs.append(cleaned)
+
+        add(species.species_id)
+        add(species.name)
+        if species.base_species:
+            add(species.base_species)
+            base = self.model.species.get(species.base_species)
+            if base:
+                add(base.name)
+                if species.form_name:
+                    add(f'{base.name}_{species.form_name}')
+                    add(f'{base.species_id.replace("SPECIES_", "")}_{species.form_name}')
+        if species.form_name:
+            add(species.form_name)
+        return slugs
+
+    def _resolve_trainer_editor_preview_source(self, species: SpeciesRecord, source_rel: str | None, palette_path: Path | None = None) -> Path | None:
+        front_names = ('front.png', 'anim_front.png')
+
+        def raster_front_in(directory: Path | None) -> Path | None:
+            if directory is None:
+                return None
+            directory = directory.resolve()
+            for name in front_names:
+                candidate = directory / name
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            return None
+
+        source_dir: Path | None = None
+        if source_rel:
+            rel = Path(str(source_rel).replace('\\', '/'))
+            source_dir = (self.config.project_dir / rel).parent
+
+        candidate_dirs: list[Path] = []
+        seen: set[Path] = set()
+
+        def add_dir(path: Path | None) -> None:
+            if path is None:
+                return
+            resolved = path.resolve()
+            if resolved in seen:
+                return
+            seen.add(resolved)
+            candidate_dirs.append(resolved)
+
+        if palette_path is not None and palette_path.exists() and palette_path.is_file() and palette_path.suffix.lower() == '.pal':
+            add_dir(palette_path.parent)
+        add_dir(source_dir)
+        if species.base_species and species.base_species in self.model.species:
+            base = self.model.species[species.base_species]
+            base_graphics = self._display_graphics_for_species(base)
+            base_front = base_graphics.get('frontPicFemale') or base_graphics.get('frontPic')
+            if base_front:
+                add_dir((self.config.project_dir / Path(str(base_front).replace('\\', '/'))).parent)
+        for slug in self._trainer_editor_species_asset_slugs(species):
+            add_dir(self.config.project_dir / 'graphics' / 'pokemon' / slug)
+
+        for directory in candidate_dirs:
+            front = raster_front_in(directory)
+            if front is not None:
+                return front
+        return None
+
+    def trainer_editor_render_species_preview(self, species: SpeciesRecord, *, shiny: bool = False) -> tuple[bytes, str] | None:
+        graphics = self._display_graphics_for_species(species)
+        normal_palette_rel = self._normalize_trainer_editor_palette_rel(graphics.get('paletteFemale') or graphics.get('palette'))
+        normal_palette_path = self.config.project_dir / str(normal_palette_rel).replace('\\', '/') if normal_palette_rel else None
+        shiny_palette_rel = self._normalize_trainer_editor_palette_rel(
+            graphics.get('shinyPaletteFemale') or graphics.get('shinyPalette') or self._fallback_shiny_palette_rel(normal_palette_rel)
+        )
+        shiny_palette_path = self.config.project_dir / str(shiny_palette_rel).replace('\\', '/') if shiny_palette_rel else None
+        front_rel = graphics.get('frontPicFemale') or graphics.get('frontPic')
+
+        source_path: Path | None = None
+        if front_rel:
+            candidate = self.config.project_dir / str(front_rel).replace('\\', '/')
+            if candidate.exists() and candidate.is_file():
+                source_path = candidate
+
+        palette_for_resolution = shiny_palette_path if (shiny and shiny_palette_path is not None) else normal_palette_path
+        resolved_source: Path | None = None
+        if source_path is not None:
+            resolved_source = self._resolve_palette_sprite_source(source_path, palette_for_resolution)
+            if (
+                resolved_source is None
+                or not resolved_source.exists()
+                or not resolved_source.is_file()
+                or resolved_source.suffix.lower() != '.png'
+                or resolved_source.name.lower() not in {'front.png', 'anim_front.png'}
+            ):
+                resolved_source = None
+
+        if resolved_source is None:
+            resolved_source = self._resolve_trainer_editor_preview_source(species, front_rel, palette_for_resolution)
+        if (
+            resolved_source is None
+            or resolved_source.suffix.lower() != '.png'
+            or resolved_source.name.lower() not in {'front.png', 'anim_front.png'}
+        ):
+            return None
+        try:
+            Image = _load_pillow_image_module()
+            with Image.open(resolved_source) as opened:
+                img = opened.copy()
+            try:
+                resolved_rel = resolved_source.relative_to(self.config.project_dir)
+            except ValueError:
+                resolved_rel = Path(resolved_source.name)
+
+            # Non-shiny preview should mirror documentation asset processing.
+            apply_normal_palette = False
+            if normal_palette_path and normal_palette_path.exists() and normal_palette_path.is_file() and normal_palette_rel:
+                apply_normal_palette = self._should_apply_palette_variant(resolved_rel, normal_palette_rel)
+            if apply_normal_palette and normal_palette_rel:
+                img = self._apply_palette_to_png(img, self.config.project_dir / normal_palette_rel, resolved_source)
+
+            # Shiny recolor is trainer-editor-only and layered on the same resolved preview source.
+            if shiny and shiny_palette_path and shiny_palette_path.exists() and shiny_palette_path.is_file():
+                img = self._apply_palette_to_png_with_source_palette(
+                    img,
+                    shiny_palette_path,
+                    resolved_source,
+                    source_palette_path=normal_palette_path,
+                )
+
+            if self._should_crop_top_half(resolved_rel):
+                crop_h = max(1, img.height // 2)
+                img = img.crop((0, 0, img.width, crop_h))
+            if self._should_process_transparent_sprite(resolved_rel):
+                img = self._make_png_background_transparent(img)
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            return buffer.getvalue(), 'image/png'
+        except Exception:
+            mime = mimetypes.guess_type(resolved_source.name)[0] or 'application/octet-stream'
+            return resolved_source.read_bytes(), mime
 
     def _display_graphics_for_species(self, species: SpeciesRecord) -> dict[str, str]:
         graphics = dict(species.graphics)
