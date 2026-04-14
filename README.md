@@ -119,8 +119,6 @@ That single command now builds the documentation outputs required for previews a
 
 ## Documentation generation
 
-⚠️ **Important**
-
 Documentation is no longer generated automatically.
 
 You must explicitly pass the `--documentation` flag to generate documentation output.
