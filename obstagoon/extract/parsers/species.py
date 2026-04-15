@@ -77,10 +77,12 @@ def _collect_numeric_macros(text: str, defines: dict[str, int] | None = None) ->
     return {k: v for k, v in resolved.items() if k not in (defines or {}) or resolved[k] != (defines or {}).get(k)}
 
 
-def _resolve_scalar_token(value: str | None, defines: dict[str, int] | None = None) -> str | None:
+def _resolve_scalar_token(value: str | None, defines: dict[str, int] | None = None, preserve_identifiers: bool = False) -> str | None:
     if value is None:
         return None
     text = (resolve_conditional_value(value, defines) or str(value)).strip()
+    if preserve_identifiers and re.fullmatch(r'[A-Z][A-Z0-9_]*', text):
+        return text
     if re.fullmatch(r'[A-Z][A-Z0-9_]*', text) and defines and text in defines:
         return str(defines[text])
     return text
@@ -402,7 +404,11 @@ def _parse_species_text(text: str, species_to_national: dict[str, int | None], l
         brace = text.find('{', match.start())
         end = find_matching(text, brace)
         block = text[brace:end + 1]
-        fields = {k: _resolve_scalar_token(v, local_defines) or v for k, v in parse_named_initializers(block).items()}
+        raw_fields = parse_named_initializers(block)
+        fields = {k: _resolve_scalar_token(v, local_defines) or v for k, v in raw_fields.items()}
+        for key in ('baseSpecies', 'formSpeciesIdTable', 'formChangeTable'):
+            if key in raw_fields:
+                fields[key] = _resolve_scalar_token(raw_fields.get(key), local_defines, preserve_identifiers=True) or raw_fields.get(key)
         entry: dict = {
             'speciesName': extract_string_initializer(fields.get('speciesName', '')),
             'categoryName': extract_string_initializer(fields.get('categoryName', '')),
@@ -417,8 +423,8 @@ def _parse_species_text(text: str, species_to_national: dict[str, int | None], l
             'natDexNum': species_to_national.get(species),
             'evolutions': _parse_evolutions(fields.get('evolutions', '{}')),
             'baseSpecies': fields.get('baseSpecies'),
-            'formSpeciesIdTable': fields.get('formSpeciesIdTable'),
-            'formChangeTable': fields.get('formChangeTable'),
+            'formSpeciesIdTable': _resolve_scalar_token(fields.get('formSpeciesIdTable'), defines, preserve_identifiers=True),
+            'formChangeTable': _resolve_scalar_token(fields.get('formChangeTable'), defines, preserve_identifiers=True),
         }
         form_idx = fields.get('formSpeciesIdTableIndex')
         entry['formSpeciesIdTableIndex'] = int(form_idx) if form_idx and form_idx.isdigit() else None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 
 from .schema import AbilityRecord, EncounterArea, EncounterSlot, Evolution, ItemLocation, ItemRecord, MoveRecord, ObstagoonModel, SpeciesRecord, SpriteAsset, TrainerPokemonRecord, TrainerRecord
 from ..normalize import evolution_label, fix_mojibake, format_encounter_method, humanize_stat_key, humanize_symbol, infer_form_name, normalize_move_category, normalize_move_metric, pretty_source_label, slug_from_symbol, unique_preserve_order
@@ -151,8 +152,20 @@ def _build_trainers(raw_trainers: list[dict], species_records: dict[str, Species
     return trainers
 
 
-def _species_sort_key(rec: SpeciesRecord) -> tuple[int, int, str]:
+def _special_form_rank(rec: SpeciesRecord) -> int:
+    symbol = rec.species_id.replace('SPECIES_', '')
+    form_name = fix_mojibake(rec.form_name or '').strip().lower()
+    tokens = set(symbol.split('_'))
+    if {'MEGA', 'GMAX', 'GIGANTAMAX', 'ETERNAMAX'} & tokens:
+        return 2
+    if any(label in form_name for label in ('mega', 'gmax', 'gigantamax', 'eternamax')):
+        return 2
+    return 0
+
+
+def _species_sort_key(rec: SpeciesRecord) -> tuple[int, int, int, str]:
     return (
+        _special_form_rank(rec),
         1 if rec.base_species else 0,
         rec.form_index if rec.form_index is not None else 0,
         rec.species_id,
@@ -195,6 +208,37 @@ def _choose_representative_species_by_dex(species_records: dict[str, SpeciesReco
         result[dex] = best.species_id
     return result
 
+
+
+
+def _augment_form_links_by_national_dex(species_records: dict[str, SpeciesRecord], forms_for_base: dict[str, list[str]]) -> None:
+    groups: dict[int, list[str]] = defaultdict(list)
+    for species_id, rec in species_records.items():
+        if rec.national_dex is None:
+            continue
+        groups[rec.national_dex].append(species_id)
+
+    def _sort_key(species_id: str) -> tuple[int, int, str]:
+        rec = species_records[species_id]
+        is_base = 0 if not rec.base_species else 1
+        form_index = rec.form_index if rec.form_index is not None else 10**9
+        return (is_base, form_index, species_id)
+
+    for _, members in groups.items():
+        if len(members) <= 1:
+            continue
+        ordered = sorted(dict.fromkeys(members), key=_sort_key)
+        anchor = ordered[0]
+        extras = [sid for sid in ordered if sid != anchor]
+        if extras:
+            existing_anchor = list(forms_for_base.get(anchor, []))
+            forms_for_base[anchor] = list(dict.fromkeys(existing_anchor + extras))
+
+        for species_id in ordered:
+            rec = species_records[species_id]
+            siblings = [sid for sid in ordered if sid != species_id]
+            if siblings:
+                rec.forms = list(dict.fromkeys(list(rec.forms) + siblings))
 
 def _fallback_egg_moves(species_records: dict[str, SpeciesRecord]) -> None:
     incoming: dict[str, list[str]] = defaultdict(list)
@@ -309,6 +353,11 @@ def build_model(project) -> ObstagoonModel:
             siblings = [sid for sid, other in species_records.items() if other.base_species == rec.base_species and sid != rec.base_species]
             species_records[rec.base_species].forms = list(dict.fromkeys(species_records[rec.base_species].forms + siblings))
 
+    _augment_form_links_by_national_dex(species_records, forms_for_base)
+    for species_id, rec in species_records.items():
+        if species_id in forms_for_base:
+            rec.forms = list(dict.fromkeys(list(rec.forms) + forms_for_base[species_id]))
+
     _fallback_egg_moves(species_records)
 
     dex_label = 'National Dex #'
@@ -374,7 +423,14 @@ def build_model(project) -> ObstagoonModel:
     }
     encounter_areas = [EncounterArea(map_name=area.get('map'), display_name=fix_mojibake(area.get('display_name')) or slug_from_symbol(area.get('map', 'MAP_UNKNOWN')).replace('-', ' ').title(), encounters={format_encounter_method(method) or method: [EncounterSlot(species=humanize_symbol(slot.get('species')) or slot.get('species'), min_level=slot.get('min_level'), max_level=slot.get('max_level'), rate=slot.get('rate'), method=format_encounter_method(slot.get('method')) or slot.get('method')) for slot in slots] for method, slots in area.get('encounters', {}).items()}) for area in raw['encounters']]
     trainers = _build_trainers(raw.get('trainers', []), species_records)
-    base_species_count = sum(1 for species_id, rec in species_records.items() if species_id not in PLACEHOLDER_SPECIES and not rec.base_species)
+    representative_species_ids = set(national_to_species.values())
+    base_species_count = len(representative_species_ids) + sum(
+        1
+        for species_id, rec in species_records.items()
+        if species_id not in PLACEHOLDER_SPECIES
+        and rec.national_dex is None
+        and not rec.base_species
+    )
     metadata = {
         'project_kind': 'pokeemerald-expansion',
         'species_count': base_species_count,

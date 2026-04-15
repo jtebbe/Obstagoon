@@ -74,6 +74,36 @@ def _exact_species_segment_bonus(rel: str, species_id: str) -> int:
     return best
 
 
+def _ordered_species_path_bonus(rel: str, species_id: str) -> int:
+    species_tokens = [bit for bit in _species_slug(species_id).split('_') if bit]
+    if not species_tokens:
+        return 0
+    parts = [part for part in rel.replace('\\', '/').lower().split('/') if part]
+    try:
+        start = parts.index('graphics')
+        if parts[start + 1] != 'pokemon':
+            return 0
+        relevant_parts = parts[start + 2:-1]
+    except (ValueError, IndexError):
+        relevant_parts = parts[:-1]
+    if not relevant_parts:
+        return 0
+
+    matched = 0
+    for part in relevant_parts:
+        part_tokens = _tokenize_pathish(part)
+        while matched < len(species_tokens) and species_tokens[matched] in part_tokens:
+            matched += 1
+            if matched == len(species_tokens):
+                break
+    if matched <= 1:
+        return 0
+    score = matched * 8
+    if matched == len(species_tokens):
+        score += 20
+    return score
+
+
 def _path_kind_bonus(path: Path, kind: str) -> int:
     rel = str(path).replace('\\', '/').lower()
     stem = path.name.lower()
@@ -489,6 +519,7 @@ def _rank_candidate(project_dir: Path, path: Path, species_id: str, kind: str, r
         score += 10
     score += _graphics_species_dir_bonus(rel_lower, species_id)
     score += _exact_species_segment_bonus(rel_lower, species_id)
+    score += _ordered_species_path_bonus(rel_lower, species_id)
     score += _extra_form_penalty(path_tokens, species_id)
     if raw_token:
         raw_norm = _normalize_token(raw_token)

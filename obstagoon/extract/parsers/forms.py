@@ -19,7 +19,11 @@ def parse_form_species_tables(project_dir: Path, defines: dict[str, int] | None 
         brace = text.find('{', m.start())
         end = find_matching(text, brace)
         body = text[brace + 1:end]
-        species = re.findall(r'\bSPECIES_[A-Z0-9_]+\b', body)
+        species = [
+            token
+            for token in re.findall(r'\bSPECIES_[A-Z0-9_]+\b', body)
+            if token not in {'SPECIES_NONE'}
+        ]
         if species:
             out[sym] = species
     return out

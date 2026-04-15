@@ -128,10 +128,23 @@ def humanize_stat_key(key: str | None) -> str | None:
 def infer_form_name(species_id: str, base_species: str | None) -> str | None:
     if not base_species or base_species == species_id:
         return None
-    head = base_species.replace("SPECIES_", "") + "_"
-    remainder = species_id.replace("SPECIES_", "")
-    if remainder.startswith(head):
-        remainder = remainder[len(head):]
+
+    base_token = base_species.replace("SPECIES_", "")
+    species_token = species_id.replace("SPECIES_", "")
+    remainder = species_token
+
+    if species_token.startswith(base_token + "_"):
+        remainder = species_token[len(base_token) + 1:]
+    else:
+        mega_match = re.match(rf"^{re.escape(base_token)}_(MEGA(?:_[A-Z0-9]+)?)$", species_token)
+        if mega_match:
+            remainder = mega_match.group(1)
+
+    if remainder == species_token:
+        base_root = re.sub(r"_(MEGA(?:_[A-Z0-9]+)?|GMAX|ALOLA|GALAR|HISUI|PALDEA(?:_[A-Z0-9]+)?)$", "", base_token)
+        if base_root and species_token.startswith(base_root + "_"):
+            remainder = species_token[len(base_root) + 1:]
+
     pretty = humanize_symbol(remainder) if remainder else None
     return pretty or (remainder.replace("_", " ").title() if remainder else None)
 

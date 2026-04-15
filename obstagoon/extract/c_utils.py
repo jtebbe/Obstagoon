@@ -315,7 +315,7 @@ def _scan_defines_in_text(text: str, defines: dict[str, int], raw: dict[str, str
         m = re.match(r'^\s*#define\s+([A-Z0-9_]+)(?!\()\b\s+(.+?)\s*$', line)
         if not m:
             continue
-        name, value = m.group(1), m.group(2).strip()
+        name, value = m.group(1), strip_comments(m.group(2)).strip()
         raw[name] = value
         if any(ch in value for ch in ['{', '}', ';']):
             continue
@@ -344,16 +344,23 @@ def discover_project_defines(project_dir: str) -> dict[str, int]:
     defines: dict[str, int] = {f'GEN_{i}': i for i in range(1, 10)}
     defines.update({'GEN_LATEST': 9, 'TRUE': 1, 'FALSE': 0})
     config_dirs = [root / 'include/config', root / 'src/config', root / 'include/constants']
+    include_roots = [cfg for cfg in config_dirs if cfg.exists()]
     paths: list[Path] = []
-    for cfg_dir in config_dirs:
-        if cfg_dir.exists():
-            paths.extend(sorted(cfg_dir.rglob('*.h')))
+    for cfg_dir in include_roots:
+        paths.extend(sorted(cfg_dir.rglob('*.h')))
 
     raw: dict[str, str] = {}
+    flattened_texts: dict[Path, str] = {}
+    for path in paths:
+        try:
+            flattened_texts[path] = flatten_local_includes(path, roots=include_roots)
+        except Exception:
+            flattened_texts[path] = read_text(path)
+
     for _ in range(8):
         changed = False
         for path in paths:
-            if _scan_defines_in_text(read_text(path), defines, raw):
+            if _scan_defines_in_text(flattened_texts[path], defines, raw):
                 changed = True
         if not changed:
             break
